@@ -1,0 +1,239 @@
+🧪 اختبار دالة buildTemplateVariables — 5 فروع (القالب الإنجليزي)
+======================================================================
+
+📋 الحالة 1: ملاحظة عادية + تخصيص مكتشف
+   العميل كتب ملاحظة تحوي اسم تخصيص، والـRegex رصد الاسم
+----------------------------------------------------------------------
+   المدخلات:
+     rawNote                 = "بأسم: خالد"
+     personalizationDetected = true
+     sallaOrderId            = 12345
+     productLabel            = "كوب مطبوع"
+
+   المخرجات (OrderForDesignerVariables):
+     {{1}} orderIdText          = "12345"
+          {{2}} productLabelText     = "كوب مطبوع"
+          {{3}} noteText             = "بأسم: خالد"
+          {{4}} personalizationBadge = "⚠️ Name customization requested"
+
+   Meta API body parameters (JSON):
+     [
+       {
+         "type": "text",
+         "text": "12345"
+       },
+       {
+         "type": "text",
+         "text": "كوب مطبوع"
+       },
+       {
+         "type": "text",
+         "text": "بأسم: خالد"
+       },
+       {
+         "type": "text",
+         "text": "⚠️ Name customization requested"
+       }
+     ]
+
+   الفحوصات:
+  • {{1}} orderIdText متطابق مع المتوقع: ✅ (متوقع: "12345", فعلي: "12345")
+  • {{2}} productLabelText متطابق مع المتوقع: ✅ (متوقع: "كوب مطبوع", فعلي: "كوب مطبوع")
+  • {{3}} noteText متطابق مع المتوقع: ✅ (متوقع: "بأسم: خالد", فعلي: "بأسم: خالد")
+  • {{4}} personalizationBadge متطابق مع المتوقع: ✅ (متوقع: "⚠️ Name customization requested", فعلي: "⚠️ Name customization requested")
+  • لا يحوي \n في الحقول المطلوبة: ✅ 
+  • لا يحتوي undefined/null/[object Object]: ✅ 
+  • {{1}} orderIdText بلا # (لأن النص الثابت يحويها): ✅ 
+  • {{2}} productLabelText بلا "for" (لأن النص الثابت يحويها): ✅ 
+
+   🏁 نتيجة الحالة 1: ✅ نجح
+📋 الحالة 2: ملاحظة عادية + لا تخصيص
+   العميل كتب ملاحظة عامة بلا اسم تخصيص
+----------------------------------------------------------------------
+   المدخلات:
+     rawNote                 = "التوصيل قبل الساعة ٥ مساءً"
+     personalizationDetected = false
+     sallaOrderId            = 12346
+     productLabel            = "كوب مطبوع"
+
+   المخرجات (OrderForDesignerVariables):
+     {{1}} orderIdText          = "12346"
+          {{2}} productLabelText     = "كوب مطبوع"
+          {{3}} noteText             = "التوصيل قبل الساعة ٥ مساءً"
+          {{4}} personalizationBadge = "None"
+
+   Meta API body parameters (JSON):
+     [
+       {
+         "type": "text",
+         "text": "12346"
+       },
+       {
+         "type": "text",
+         "text": "كوب مطبوع"
+       },
+       {
+         "type": "text",
+         "text": "التوصيل قبل الساعة ٥ مساءً"
+       },
+       {
+         "type": "text",
+         "text": "None"
+       }
+     ]
+
+   الفحوصات:
+  • {{1}} orderIdText متطابق مع المتوقع: ✅ (متوقع: "12346", فعلي: "12346")
+  • {{2}} productLabelText متطابق مع المتوقع: ✅ (متوقع: "كوب مطبوع", فعلي: "كوب مطبوع")
+  • {{3}} noteText متطابق مع المتوقع: ✅ (متوقع: "التوصيل قبل الساعة ٥ مساءً", فعلي: "التوصيل قبل الساعة ٥ مساءً")
+  • {{4}} personalizationBadge متطابق مع المتوقع: ✅ (متوقع: "None", فعلي: "None")
+  • لا يحوي \n في الحقول المطلوبة: ✅ 
+  • لا يحتوي undefined/null/[object Object]: ✅ 
+  • {{1}} orderIdText بلا # (لأن النص الثابت يحويها): ✅ 
+  • {{2}} productLabelText بلا "for" (لأن النص الثابت يحويها): ✅ 
+
+   🏁 نتيجة الحالة 2: ✅ نجح
+📋 الحالة 3: لا ملاحظة (null) + تخصيص مكتشف (حالة حدية)
+   الملاحظة null صراحةً. نختبر أن الدالة لا تكسر حين personalizationDetected=true
+----------------------------------------------------------------------
+   المدخلات:
+     rawNote                 = null
+     personalizationDetected = true
+     sallaOrderId            = 12347
+     productLabel            = "كوب مطبوع"
+
+   المخرجات (OrderForDesignerVariables):
+     {{1}} orderIdText          = "12347"
+          {{2}} productLabelText     = "كوب مطبوع"
+          {{3}} noteText             = "لا توجد ملاحظات"
+          {{4}} personalizationBadge = "⚠️ Name customization requested"
+
+   Meta API body parameters (JSON):
+     [
+       {
+         "type": "text",
+         "text": "12347"
+       },
+       {
+         "type": "text",
+         "text": "كوب مطبوع"
+       },
+       {
+         "type": "text",
+         "text": "لا توجد ملاحظات"
+       },
+       {
+         "type": "text",
+         "text": "⚠️ Name customization requested"
+       }
+     ]
+
+   الفحوصات:
+  • {{1}} orderIdText متطابق مع المتوقع: ✅ (متوقع: "12347", فعلي: "12347")
+  • {{2}} productLabelText متطابق مع المتوقع: ✅ (متوقع: "كوب مطبوع", فعلي: "كوب مطبوع")
+  • {{3}} noteText متطابق مع المتوقع: ✅ (متوقع: "لا توجد ملاحظات", فعلي: "لا توجد ملاحظات")
+  • {{4}} personalizationBadge متطابق مع المتوقع: ✅ (متوقع: "⚠️ Name customization requested", فعلي: "⚠️ Name customization requested")
+  • لا يحوي \n في الحقول المطلوبة: ✅ 
+  • لا يحتوي undefined/null/[object Object]: ✅ 
+  • {{1}} orderIdText بلا # (لأن النص الثابت يحويها): ✅ 
+  • {{2}} productLabelText بلا "for" (لأن النص الثابت يحويها): ✅ 
+
+   🏁 نتيجة الحالة 3: ✅ نجح
+📋 الحالة 4: لا ملاحظة (فارغة "") + لا تخصيص (الحالة الشائعة)
+   العميل لم يكتب أي ملاحظة إطلاقاً (string فارغ)
+----------------------------------------------------------------------
+   المدخلات:
+     rawNote                 = ""
+     personalizationDetected = false
+     sallaOrderId            = 12348
+     productLabel            = "كوب مطبوع"
+
+   المخرجات (OrderForDesignerVariables):
+     {{1}} orderIdText          = "12348"
+          {{2}} productLabelText     = "كوب مطبوع"
+          {{3}} noteText             = "لا توجد ملاحظات"
+          {{4}} personalizationBadge = "None"
+
+   Meta API body parameters (JSON):
+     [
+       {
+         "type": "text",
+         "text": "12348"
+       },
+       {
+         "type": "text",
+         "text": "كوب مطبوع"
+       },
+       {
+         "type": "text",
+         "text": "لا توجد ملاحظات"
+       },
+       {
+         "type": "text",
+         "text": "None"
+       }
+     ]
+
+   الفحوصات:
+  • {{1}} orderIdText متطابق مع المتوقع: ✅ (متوقع: "12348", فعلي: "12348")
+  • {{2}} productLabelText متطابق مع المتوقع: ✅ (متوقع: "كوب مطبوع", فعلي: "كوب مطبوع")
+  • {{3}} noteText متطابق مع المتوقع: ✅ (متوقع: "لا توجد ملاحظات", فعلي: "لا توجد ملاحظات")
+  • {{4}} personalizationBadge متطابق مع المتوقع: ✅ (متوقع: "None", فعلي: "None")
+  • لا يحوي \n في الحقول المطلوبة: ✅ 
+  • لا يحتوي undefined/null/[object Object]: ✅ 
+  • {{1}} orderIdText بلا # (لأن النص الثابت يحويها): ✅ 
+  • {{2}} productLabelText بلا "for" (لأن النص الثابت يحويها): ✅ 
+
+   🏁 نتيجة الحالة 4: ✅ نجح
+📋 الحالة 5: ملاحظة تحوي \n صريحاً + تخصيص (التنظيف التلقائي)
+   العميل كتب ملاحظة متعددة الأسطر — يجب أن يحذف \n ويستبدلها بمسافة، ويدمج أي مسافات متتالية
+----------------------------------------------------------------------
+   المدخلات:
+     rawNote                 = "بأسم: خالد\nملاحظة إضافية   بمسافات   زائدة"
+     personalizationDetected = true
+     sallaOrderId            = 12349
+     productLabel            = "كوب مطبوع"
+
+   المخرجات (OrderForDesignerVariables):
+     {{1}} orderIdText          = "12349"
+          {{2}} productLabelText     = "كوب مطبوع"
+          {{3}} noteText             = "بأسم: خالد ملاحظة إضافية بمسافات زائدة"
+          {{4}} personalizationBadge = "⚠️ Name customization requested"
+
+   Meta API body parameters (JSON):
+     [
+       {
+         "type": "text",
+         "text": "12349"
+       },
+       {
+         "type": "text",
+         "text": "كوب مطبوع"
+       },
+       {
+         "type": "text",
+         "text": "بأسم: خالد ملاحظة إضافية بمسافات زائدة"
+       },
+       {
+         "type": "text",
+         "text": "⚠️ Name customization requested"
+       }
+     ]
+
+   الفحوصات:
+  • {{1}} orderIdText متطابق مع المتوقع: ✅ (متوقع: "12349", فعلي: "12349")
+  • {{2}} productLabelText متطابق مع المتوقع: ✅ (متوقع: "كوب مطبوع", فعلي: "كوب مطبوع")
+  • {{3}} noteText متطابق مع المتوقع: ✅ (متوقع: "بأسم: خالد ملاحظة إضافية بمسافات زائدة", فعلي: "بأسم: خالد ملاحظة إضافية بمسافات زائدة")
+  • {{4}} personalizationBadge متطابق مع المتوقع: ✅ (متوقع: "⚠️ Name customization requested", فعلي: "⚠️ Name customization requested")
+  • لا يحوي \n في الحقول المطلوبة: ✅ 
+  • لا يحتوي undefined/null/[object Object]: ✅ 
+  • {{1}} orderIdText بلا # (لأن النص الثابت يحويها): ✅ 
+  • {{2}} productLabelText بلا "for" (لأن النص الثابت يحويها): ✅ 
+
+   🏁 نتيجة الحالة 5: ✅ نجح
+
+======================================================================
+📊 ملخص: 5 نجح / 0 فشل من أصل 5 حالات
+======================================================================
+
+✅ كل الحالات الـ5 نجحت. الدالة جاهزة للاستخدام في المرحلة 8-ج.

@@ -1,0 +1,125 @@
+﻿node : (node:6664) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of 
+file:///C:/Users/abdal/Formak/scripts/test-validators.ts is not specified and 
+it doesn't parse as CommonJS.
+At line:1 char:86
++ ... ing]::UTF8; node --env-file=.env.local --experimental-strip-types scr ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ((node:6664) [MO...se as CommonJS. 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Reparsing as ES module because module syntax was detected. This incurs a 
+performance overhead.
+To eliminate this warning, add "type": "module" to 
+C:\Users\abdal\Formak\package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+==============================================================================
+🧪 Validation Edge Cases Test — app/lib/validators.ts
+==============================================================================
+
+------------------------------------------------------------------------------
+🔹 الجزء 1: 16 حالة لـ validateDesignerWhatsApp
+------------------------------------------------------------------------------
+   ✅ #1 سلسلة فارغة (مرفوض)
+      input="" → isValid=false normalized="" error="رقم الواتساب مطلوب."
+   ✅ #2 مسافة بيضاء فقط (مرفوض)
+      input="   " → isValid=false normalized="" error="رقم الواتساب مطلوب."
+   ✅ #3 بدون مفتاح دولي (05xxxxxxxx محلي) (مرفوض)
+      input="0501234567" → isValid=false normalized="" error="الرقم يجب أن يبدأ بـ966 (السعودية)."
+   ✅ #4 صيغة +966xxxxxxxxx (تحتوي +) (مرفوض)
+      input="+966501234567" → isValid=false normalized="" error="لا يُسمح بعلامة +. أدخل الرقم بالصيغة الدولية بدونها."
+   ✅ #5 يحتوي على حروف عربية (مرفوض)
+      input="966501234abc" → isValid=false normalized="" error="الرقم يجب أن يحتوي أرقامًا فقط."
+   ✅ #6 يحتوي على حروف إنجليزية (مرفوض)
+      input="96650XX1234" → isValid=false normalized="" error="الرقم يجب أن يحتوي أرقامًا فقط."
+   ✅ #7 يحتوي فراغات (مرفوض)
+      input="966 50 123 4567" → isValid=false normalized="" error="الرقم يجب ألا يحتوي فراغات."
+   ✅ #8 يحتوي شرطات (مرفوض)
+      input="966-50-123-4567" → isValid=false normalized="" error="الرقم يجب أن يحتوي أرقامًا فقط."
+   ✅ #9 يحتوي رموز خاصة (مرفوض)
+      input="966501234@567" → isValid=false normalized="" error="الرقم يجب أن يحتوي أرقامًا فقط."
+   ✅ #10 مفتاح دولي خاطئ (971 الإمارات) (مرفوض)
+      input="971501234567" → isValid=false normalized="" error="الرقم يجب أن يبدأ بـ966 (السعودية)."
+   ✅ #11 مفتاح 9665 لكن أرقام أقل (مرفوض)
+      input="96650123456" → isValid=false normalized="" error="الصيغة الصحيحة: 9665 متبوعة بـ8 أرقام (مثال: 966501234567)."
+   ✅ #12 مفتاح 9665 لكن أرقام أكثر (مرفوض)
+      input="9665012345678" → isValid=false normalized="" error="الصيغة الصحيحة: 9665 متبوعة بـ8 أرقام (مثال: 966501234567)."
+   ✅ #13 null حرفي كنص (مرفوض)
+      input="null" → isValid=false normalized="" error="الرقم يجب أن يحتوي أرقامًا فقط."
+   ✅ #14 undefined حرفي كنص (مرفوض)
+      input="undefined" → isValid=false normalized="" error="الرقم يجب أن يحتوي أرقامًا فقط."
+   ✅ #14.1 خط أرضي الرياض (الرقم الرابع = 1) (مرفوض)
+      input="966111234567" → isValid=false normalized="" error="الرقم يجب أن يكون جوالًا سعوديًا (يبدأ بـ9665 — الخطوط الأرضية غير مدعومة في واتساب)."
+   ✅ #14.2 خط أرضي جدة/مكة (الرقم الرابع = 2) (مرفوض)
+      input="966212345678" → isValid=false normalized="" error="الرقم يجب أن يكون جوالًا سعوديًا (يبدأ بـ9665 — الخطوط الأرضية غير مدعومة في واتساب)."
+   ✅ #14.3 خط أرضي بدون 5 كبادئة (محاكاة) (مرفوض)
+      input="966312345678" → isValid=false normalized="" error="الرقم يجب أن يكون جوالًا سعوديًا (يبدأ بـ9665 — الخطوط الأرضية غير مدعومة في واتساب)."
+   ✅ #14.4 رقم دولي لبادئة غير مدعومة (4) (مرفوض)
+      input="966412345678" → isValid=false normalized="" error="الرقم يجب أن يكون جوالًا سعوديًا (يبدأ بـ9665 — الخطوط الأرضية غير مدعومة في واتساب)."
+   ✅ #15 رقم سعودي صحيح (جوال) (مقبول)
+      input="966501234567" → isValid=true normalized="966501234567" error=null
+   ✅ #16 رقم سعودي صحيح مع فراغات تُقص (مقبول)
+      input="  966509876543  " → isValid=true normalized="966509876543" error=null
+
+------------------------------------------------------------------------------
+🔹 الجزء 2: 5 حالات لـ validateSallaProductId
+------------------------------------------------------------------------------
+   ✅ #101 معرّف فارغ
+      input="" → isValid=false value=null error="معرّف المنتج بسلة مطلوب."
+   ✅ #102 معرّف رقمي صحيح
+      input="12345" → isValid=true value=12345 error=null
+   ✅ #103 معرّف بحروف
+      input="abc" → isValid=false value=null error="المعرّف يجب أن يكون رقمًا صحيحًا موجبًا."
+   ✅ #104 رقم سالب
+      input="-5" → isValid=false value=null error="المعرّف يجب أن يكون رقمًا صحيحًا موجبًا."
+   ✅ #105 صفر
+      input="0" → isValid=false value=null error="المعرّف خارج النطاق المسموح."
+
+------------------------------------------------------------------------------
+🔹 الجزء 3: 3 حالات لـ isNonEmptyText
+------------------------------------------------------------------------------
+   ✅ #201 نص فارغ
+      input="" → result=false
+   ✅ #202 نص عادي
+      input="منتج" → result=true
+   ✅ #203 مسافات فقط
+      input="   " → result=false
+
+------------------------------------------------------------------------------
+🔹 الجزء 4: محاولة كتابة مدخلات خاطئة في product_designer_map (Service Role)
+------------------------------------------------------------------------------
+   ℹ️  أُنشئ merchant وهمي للاختبار: 207a036a…
+
+   4.1) التحقق من أن validateDesignerWhatsApp ترفضها كلها:
+   ✅ validator يرفض: رقم بدون مفتاح 966
+      raw="0501234567" → isValid=false error="الرقم يجب أن يبدأ بـ966 (السعودية)."
+   ✅ validator يرفض: رقم بـ +
+      raw="+966501234567" → isValid=false error="لا يُسمح بعلامة +. أدخل الرقم بالصيغة الدولية بدونها."
+   ✅ validator يرفض: رقم بحروف
+      raw="96650abc4567" → isValid=false error="الرقم يجب أن يحتوي أرقامًا فقط."
+   ✅ validator يرفض: سلسلة فارغة
+      raw="" → isValid=false error="رقم الواتساب مطلوب."
+   ✅ validator يرفض: مسافات فقط
+      raw="   " → isValid=false error="رقم الواتساب مطلوب."
+
+   4.2) محاكاة مسار Server Action: validation ⇒ insert (يجب ألّا يُدرج شيئاً):
+   ✅ كل المدخلات الخاطئة مُنعت قبل الإدراج
+      blocked=5/5 inserted=0
+
+   4.3) فحص حماية DB-side: محاولة إدراج مباشر بمدخلات سيئة (نتجاوز validator):
+      • رقم بـ + → ⚠️ DB قَبِل! (id=d1c32ec7…) — لا حماية DB-side لهذا العمود
+      • بدون 966 → ⚠️ DB قَبِل! (id=a2d53ef7…) — لا حماية DB-side لهذا العمود
+      • بحروف → ⚠️ DB قَبِل! (id=f4d2b238…) — لا حماية DB-side لهذا العمود
+
+   ⚠️  Defense-in-Depth: 3 من 3 مدخلات سيئة قَبِلها DB (بدون CHECK).
+      ↳ لا توجد حماية DB-side على designer_whatsapp. الاعتماد كليّ على Server Action validator.
+      ↳ توصية: أضف CHECK constraint أو trigger في المرحلة اللاحقة — ليس عطلاً في الـ validation الحالية.
+
+   🧹 تنظيف صفوف الاختبار + merchant الوهمي…
+   ✅ تم التنظيف.
+
+==============================================================================
+📊 ملخص: نجح 34 | فشل 0 | الإجمالي 34
+==============================================================================
+
+✅ PASS — validateDesignerWhatsApp صارمة بكل الحالات الـ16. لا يصل مدخل فاسد إلى DB عبر Server Action.
