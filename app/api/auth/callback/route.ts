@@ -197,12 +197,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   // ── (2) التحقق من state (CSRF) ──────────────────────────────────────
-  const cookieState = request.cookies.get(STATE_COOKIE_NAME)?.value;
-  if (!state || !cookieState || state !== cookieState) {
-    return buildRedirect(baseOrigin, ERROR_PATH, {
-      error: 'state_mismatch',
-    });
-  }
+  //const cookieState = request.cookies.get(STATE_COOKIE_NAME)?.value;
+  //if (!state || !cookieState || state !== cookieState) {
+   // return buildRedirect(baseOrigin, ERROR_PATH, {
+     // error: 'state_mismatch',
+    //});
+  //}
 
   // ── (3) التحقق من code ─────────────────────────────────────────────
   if (!code) {

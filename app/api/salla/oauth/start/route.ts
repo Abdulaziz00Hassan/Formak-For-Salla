@@ -74,16 +74,24 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
   const state = generateState();
   const authUrl = buildAuthUrl(state);
 
-  const response = NextResponse.redirect(authUrl, { status: 302 });
-  response.cookies.set({
-    name: STATE_COOKIE_NAME,
-    value: state,
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: STATE_TTL_SECONDS,
-  });
+  // ⚠️ ملاحظة حرجة: NextResponse.redirect() أحياناً يُسقط Set-Cookie على
+  // 302 في بيئات Vercel edge. نُمرّر headers صراحةً + 303 لنضمن وصول
+  // Set-Cookie للمتصفح قبل التحويل لسلة.
+  const cookieValue = [
+    `${STATE_COOKIE_NAME}=${state}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${STATE_TTL_SECONDS}`,
+    // Vercel يخدم HTTPS دائماً → Secure دائماً (يُحسّن CSRF أيضاً)
+    'Secure',
+  ].join('; ');
 
-  return response;
+  return new NextResponse(null, {
+    status: 303,
+    headers: {
+      Location: authUrl,
+      'Set-Cookie': cookieValue,
+    },
+  });
 }
