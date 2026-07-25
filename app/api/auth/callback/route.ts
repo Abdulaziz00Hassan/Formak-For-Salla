@@ -63,6 +63,7 @@ function isSallaTokenSuccess(value: unknown): value is SallaTokenSuccess {
   return (
     typeof v['access_token'] === 'string' &&
     typeof v['refresh_token'] === 'string' &&
+    typeof v['scope'] === 'string' &&
     (typeof v['merchant'] === 'number' || typeof v['merchant'] === 'string')
   );
 }
