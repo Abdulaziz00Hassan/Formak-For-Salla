@@ -136,6 +136,10 @@ async function exchangeCodeForToken(code: string): Promise<SallaTokenSuccess> {
   }
 
   if (!res.ok || !isSallaTokenSuccess(data)) {
+    // 🔍 تشخيص مؤقت: اطبع الـstatus والـbody كاملاً لمعرفة ما ترسله سلة.
+    console.error('[Callback] ❌ Token exchange failed — diagnostic dump:');
+    console.error(`[Callback]    res.status = ${res.status}`);
+    console.error(`[Callback]    data       = ${JSON.stringify(data)}`);
     const err = data as Partial<SallaTokenErrorPayload> | null;
     const reason = err?.error ?? `http_${res.status}`;
     const desc = err?.error_description ? `: ${err.error_description}` : '';
@@ -196,13 +200,22 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return buildRedirect(baseOrigin, ERROR_PATH, { error: sallaError });
   }
 
-  // ── (2) التحقق من state (CSRF) ──────────────────────────────────────
-  //const cookieState = request.cookies.get(STATE_COOKIE_NAME)?.value;
-  //if (!state || !cookieState || state !== cookieState) {
-   // return buildRedirect(baseOrigin, ERROR_PATH, {
-     // error: 'state_mismatch',
-    //});
-  //}
+  // ── (2) التحقق من state (CSRF) — منطق شرطي ──────────────────────
+  // حالتان:
+  //  (أ) الـcookie موجودة → التاجر مرّ عبر /api/salla/oauth/start → نفّذ
+  //      تحقق صارم. أي اختلاف = CSRF attack محتمل → ارفض.
+  //  (ب) الـcookie غائبة → التاجر بدأ التثبيت مباشرة من رابط سلة (install
+  //      link) دون المرور بـ start route. في هذه الحالة لا يوجد state للمقارنة
+  //      به — تجاوز الفحص والاستمرار (الحماية الإضافية: code يُستبدل مرة
+  //      واحدة فقط، فلو سُرق الرابط بعد الاستخدام يصبح عديم النفع).
+  const cookieState = request.cookies.get(STATE_COOKIE_NAME)?.value;
+  if (cookieState !== undefined) {
+    if (!state || state !== cookieState) {
+      return buildRedirect(baseOrigin, ERROR_PATH, {
+        error: 'state_mismatch',
+      });
+    }
+  }
 
   // ── (3) التحقق من code ─────────────────────────────────────────────
   if (!code) {
