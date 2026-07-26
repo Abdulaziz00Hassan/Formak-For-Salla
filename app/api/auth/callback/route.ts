@@ -1,5 +1,5 @@
 /**
- * Salla OAuth — Step 2: Callback Handler, Token Exchange, Persist
+ * Salla OAuth — Step 2: Callback Handler (Token Exchange Only)
  *
  * نقطة الرجوع من سلة بعد موافقة/رفض التاجر. GET فقط.
  *
@@ -12,17 +12,17 @@
  *
  * المسار:
  *  1) لو ?error موجود → redirect إلى /auth/error (دون كشف تفاصيل حساسة).
- *  2) تحقق state ∈ query يطابق state ∈ cookie (CSRF). اختلاف → رفض.
+ *  2) تحقق state (CSRF) — منطق شرطي كما هو.
  *  3) تحقق وجود code. غيابه → رفض (نفس المسار).
- *  4) POST إلى https://accounts.salla.sa/oauth2/token بـ
- *     grant_type=authorization_code + client_id + client_secret + code + redirect_uri
- *     (server-side فقط — client_secret لا يخرج من الخادم أبداً).
- *  5) upsert في merchants (salla_store_id, access_token, refresh_token, token_expires_at).
- *     - token_expires_at = now + expires_in*1000 (إن كان رقمًا موجبًا)
- *                         else now + 14 يومًا.
- *  6) حذف cookie الـstate في كلتا الحالتين (نجاح/فشل).
- *  7) نجاح → redirect إلى /dashboard/mappings?salla_connected=1
- *     فشل  → redirect إلى /auth/error?error=<reason>
+ *  4) POST إلى https://accounts.salla.sa/oauth2/token لـ تبادل code
+ *     بـ access_token/refresh_token (server-side فقط — client_secret
+ *     لا يخرج من الخادم أبداً).
+ *  5) ⚠️ في Custom Mode: رد تبادل التوكن لا يحوي merchant.
+ *      سلة ترسل merchant + tokens عبر حدث webhook منفصل
+ *      (app.store.authorize) على نفس رابط الـwebhook.
+ *      → هذا الملف لا يكتب في قاعدة البيانات. يوجّه التاجر فقط لـ
+ *        /dashboard/mappings?salla_connected=pending (سيتحوّل إلى "1"
+ *        بعد وصول webhook authorize).
  *
  * ⚠️ لا آلية تجديد تلقائي هنا — تُبنى في مرحلة منفصلة كما في Phase 7.
  * ⚠️ scope في رد سلة يجب أن يحوي offline_access. إن غاب → نُسجّل خطأ واضحاً
@@ -32,11 +32,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient as createSupabaseAdminClient } from '@supabase/supabase-js';
 
 const STATE_COOKIE_NAME = 'salla_oauth_state';
 const SALLA_TOKEN_ENDPOINT = 'https://accounts.salla.sa/oauth2/token';
-const DEFAULT_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60;
 
 const SUCCESS_PATH = '/dashboard/mappings';
 const ERROR_PATH = '/auth/error';
@@ -49,7 +47,9 @@ interface SallaTokenSuccess {
   token_type: string;
   expires_in: number;
   scope: string;
-  merchant: number | string;
+  // ⚠️ ملاحظة: رد Custom Mode OAuth لتبادل التوكن لا يحوي merchant.
+  // سلة ترسل merchant_id + التوكنات عبر حدث webhook منفصل
+  // (app.store.authorize) — الكتابة في DB تتم في app/api/salla/webhook/route.ts.
 }
 
 interface SallaTokenErrorPayload {
@@ -63,8 +63,8 @@ function isSallaTokenSuccess(value: unknown): value is SallaTokenSuccess {
   return (
     typeof v['access_token'] === 'string' &&
     typeof v['refresh_token'] === 'string' &&
-    typeof v['scope'] === 'string' &&
-    (typeof v['merchant'] === 'number' || typeof v['merchant'] === 'string')
+    typeof v['scope'] === 'string'
+    // التحقق من merchant محذوف — لا يصل هنا في Custom Mode.
   );
 }
 
@@ -80,19 +80,6 @@ function getBaseOrigin(request: NextRequest): string {
     }
   }
   return new URL(request.url).origin;
-}
-
-function createAdminClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceKey) {
-    throw new Error(
-      '[Supabase] Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY'
-    );
-  }
-  return createSupabaseAdminClient(url, serviceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
 }
 
 function readRequiredEnv(): {
@@ -155,22 +142,6 @@ async function exchangeCodeForToken(code: string): Promise<SallaTokenSuccess> {
   return data;
 }
 
-function computeExpiresAt(expiresIn: number): Date {
-  if (Number.isFinite(expiresIn) && expiresIn > 0) {
-    return new Date(Date.now() + expiresIn * 1000);
-  }
-  return new Date(Date.now() + DEFAULT_TOKEN_TTL_SECONDS * 1000);
-}
-
-function parseMerchantId(raw: number | string): number {
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-  if (typeof raw === 'string') {
-    const parsed = parseInt(raw, 10);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  throw new Error('invalid_merchant_id_from_salla');
-}
-
 function buildRedirect(
   baseOrigin: string,
   path: string,
@@ -224,30 +195,15 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
   }
 
-  // ── (4) + (5) + (6) — المسار السعيد: تبادل + تخزين + تحويل ────────
+  // ── (4) المسار السعيد: تبادل التوكن + تحويل فقط ─────────────────
+  // ⚠️ Custom Mode: رد تبادل التوكن لا يحوي merchant.
+  //    سلة ترسل merchant + tokens لاحقاً عبر webhook app.store.authorize
+  //    (المعالَج في app/api/salla/webhook/route.ts).
+  //    هذا الملف لا يكتب في قاعدة البيانات — يوجّه التاجر فقط.
+  //    ?salla_connected=pending (وليس =1) → يتغير إلى "1" بعد نجاح webhook authorize.
   try {
-    const tokenData = await exchangeCodeForToken(code);
-    const expiresAt = computeExpiresAt(tokenData.expires_in);
-    const sallaStoreId = parseMerchantId(tokenData.merchant);
-
-    const supabase = createAdminClient();
-    const { error: dbError } = await supabase
-      .from('merchants')
-      .upsert(
-        {
-          salla_store_id: sallaStoreId,
-          access_token: tokenData.access_token,
-          refresh_token: tokenData.refresh_token,
-          token_expires_at: expiresAt.toISOString(),
-        },
-        { onConflict: 'salla_store_id' }
-      );
-
-    if (dbError) {
-      throw new Error(`db_upsert_failed: ${dbError.message}`);
-    }
-
-    return buildRedirect(baseOrigin, SUCCESS_PATH, { salla_connected: '1' });
+    await exchangeCodeForToken(code);
+    return buildRedirect(baseOrigin, SUCCESS_PATH, { salla_connected: 'pending' });
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'unknown_error';
     return buildRedirect(baseOrigin, ERROR_PATH, { error: reason });

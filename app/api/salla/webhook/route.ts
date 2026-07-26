@@ -4,14 +4,13 @@
  * ⚠️ قاعدة حرجة: هذا الراوت يجب أن يردّ بـ HTTP 200 خلال < 200ms.
  *    أي عمل ثقيل (Regex، Supabase، WhatsApp) يحدث في الخلفية بعد الرد.
  *
- * المسار:
- *  1) قراءة جسم الطلب كـ text (للتحقق من التوقيع).
- *  2) التحقق من `X-Salla-Signature` عبر `crypto.timingSafeEqual`.
- *  3) طباعة الـ payload الخام للفحص الميداني.
- *  4) إرجاع `200 { success: true }` فوراً.
- *  5) تشغيل `processOrderInBackground` كـ fire-and-forget (لا await).
+ * الأحداث المدعومة:
+ *  - order.created       → معالجة الطلب (Regex + lookup + WhatsApp) في الخلفية.
+ *  - app.store.authorize → تخزين tokens التاجر في جدول merchants (Custom Mode OAuth).
  *
- * مرجع الوثيقة: Formak-Ai-Context-v2.md — القسم 4 (آلية العمل) + القسم 7.
+ * أي حدث آخر → 200 مع تجاهل آمن (لا رفض، حتى لا تُكرّر سلة الإرسال).
+ *
+ * مرجع: Formak-Ai-Context-v3.md + Formak-Phase7-to-Launch-v2.md (Phase 9).
  */
 
 import crypto from 'crypto';
@@ -27,8 +26,54 @@ import type { SallaWebhookPayload } from '@/app/lib/salla-types';
 /** اسم الـ header الرسمي للتوقيع في سلة. */
 const SIGNATURE_HEADER = 'x-salla-signature';
 
-/** الأحداث التي نعالجها. أي حدث آخر نتجاهله بهدوء بعد إرجاع 200. */
-const HANDLED_EVENTS: ReadonlySet<string> = new Set(['order.created']);
+/** كل الأحداث التي يعرفها هذا الـ handler — للتوثيق والـ GET status. */
+const HANDLED_EVENTS: ReadonlySet<string> = new Set([
+  'order.created',
+  'app.store.authorize',
+]);
+
+// ─── Types for app.store.authorize ──────────────────────────────────────
+
+/** بنية `data` داخل حدث app.store.authorize. */
+interface SallaAuthorizeData {
+  access_token: string;
+  refresh_token: string;
+  /** طابع زمني مطلق بالثواني (Unix timestamp) — لا تجمعه مع Date.now(). */
+  expires: number;
+  scope: string;
+  token_type: string;
+}
+
+/** بنية حدث app.store.authorize الكامل. */
+interface SallaAuthorizePayload {
+  event: 'app.store.authorize';
+  /** معرّف المتجر عند سلة (BigInt — يُستقبل كـ number). */
+  merchant: number;
+  created_at: string;
+  data: SallaAuthorizeData;
+}
+
+/**
+ * حارس نوع لـ app.store.authorize — يضمن أن كل حقل موجود وبنوعه الصحيح
+ * قبل أي كتابة في قاعدة البيانات. مهم لأن هذا الحدث مختلف البنية تماماً
+ * عن order.created (لا `items`، بل `tokens`).
+ */
+function isSallaAuthorizePayload(value: unknown): value is SallaAuthorizePayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  if (v['event'] !== 'app.store.authorize') return false;
+  if (typeof v['merchant'] !== 'number') return false;
+  if (typeof v['created_at'] !== 'string') return false;
+  if (typeof v['data'] !== 'object' || v['data'] === null) return false;
+  const d = v['data'] as Record<string, unknown>;
+  return (
+    typeof d['access_token'] === 'string' &&
+    typeof d['refresh_token'] === 'string' &&
+    typeof d['expires'] === 'number' &&
+    typeof d['scope'] === 'string' &&
+    typeof d['token_type'] === 'string'
+  );
+}
 
 /** نوع مانع لـ TypeScript — عند فشل التحقق. */
 type SignatureCheckResult =
@@ -95,6 +140,83 @@ function buildSupabaseClient() {
   return createOrderRoutingSupabaseClient();
 }
 
+// ─── app.store.authorize handler ─────────────────────────────────────────
+
+/**
+ * يعالج حدث app.store.authorize من Custom Mode OAuth في سلة.
+ *
+ * ⚠️ الفرق الجوهري عن order.created:
+ *   - هذا الحدث يصل بعد موافقة التاجر على تثبيت التطبيق.
+ *   - يحوي merchant (معرّف المتجر) + التوكنات مباشرة.
+ *   - الكتابة تتم هنا، وليس في app/api/auth/callback/route.ts.
+ *
+ * @returns NextResponse بحالة 200 عند النجاح/الفشل الآمن، 400 عند payload غير صالح.
+ */
+async function handleAppStoreAuthorize(
+  rawPayload: unknown
+): Promise<NextResponse> {
+  if (!isSallaAuthorizePayload(rawPayload)) {
+    console.error('[Webhook] ❌ app.store.authorize payload failed type guard');
+    return NextResponse.json(
+      { success: false, message: 'Invalid authorize payload structure' },
+      { status: 400 }
+    );
+  }
+
+  let supabase: SupabaseClient;
+  try {
+    supabase = buildSupabaseClient();
+  } catch (clientErr) {
+    const message = clientErr instanceof Error ? clientErr.message : 'Unknown error';
+    console.error(`[Webhook] ❌ Failed to build Supabase client for authorize:`, message);
+    // 200 رغم الخطأ لمنع سلة من إعادة المحاولة تلقائياً (best practice للـ webhooks).
+    return NextResponse.json(
+      { success: false, message: 'Supabase configuration error' },
+      { status: 200 }
+    );
+  }
+
+  // expires = طابع زمني مطلق بالثواني (Unix timestamp) → نضرب في 1000 فقط.
+  // لا نجمعه مع Date.now() — هذا timestamp مستقل عن وقت الاستلام.
+  const tokenExpiresAt = new Date(rawPayload.data.expires * 1000).toISOString();
+
+  const { error } = await supabase
+    .from('merchants')
+    .upsert(
+      {
+        salla_store_id: rawPayload.merchant,
+        access_token: rawPayload.data.access_token,
+        refresh_token: rawPayload.data.refresh_token,
+        token_expires_at: tokenExpiresAt,
+      },
+      { onConflict: 'salla_store_id' }
+    );
+
+  if (error) {
+    console.error(
+      `[Webhook] ❌ Merchant upsert failed for salla_store_id=${rawPayload.merchant}:`,
+      error
+    );
+    // 200 رغم الخطأ لمنع سلة من إعادة المحاولة.
+    return NextResponse.json(
+      {
+        success: false,
+        message: 'Merchant upsert failed',
+        error: error.message,
+      },
+      { status: 200 }
+    );
+  }
+
+  console.log(
+    `[Webhook] ✅ Merchant upserted for app.store.authorize: salla_store_id=${rawPayload.merchant}`
+  );
+  return NextResponse.json(
+    { success: true, message: 'Merchant authorized' },
+    { status: 200 }
+  );
+}
+
 // ─── POST /api/salla/webhook ──────────────────────────────────────────────
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -129,10 +251,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
   console.log('[Webhook] ✅ Signature verified successfully');
 
-  // 5) حلّل الـ payload واطبعه للفحص الميداني
-  let payload: SallaWebhookPayload;
+  // 5) حلّل الـ payload كـ unknown — سنقرّر نوعه بعد تحديد الحدث
+  let payload: unknown;
   try {
-    payload = JSON.parse(rawBody) as SallaWebhookPayload;
+    payload = JSON.parse(rawBody);
   } catch (err) {
     console.error('[Webhook] ❌ Invalid JSON payload:', err);
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
@@ -142,23 +264,42 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   console.log('[Webhook] 📦 Raw payload received:');
   console.log(JSON.stringify(payload, null, 2));
 
-  // 7) تجاهل الأحداث غير المطلوبة
-  if (!HANDLED_EVENTS.has(payload.event)) {
-    console.log(`[Webhook] ℹ️ Ignoring event: ${payload.event}`);
+  // 7) استخرج اسم الحدث — dispatch مركزي حسب نوعه
+  let event: string | null = null;
+  if (typeof payload === 'object' && payload !== null && 'event' in payload) {
+    const maybeEvent = (payload as Record<string, unknown>).event;
+    if (typeof maybeEvent === 'string') {
+      event = maybeEvent;
+    }
+  }
+  if (event === null) {
+    console.error('[Webhook] ❌ Missing or invalid event field');
+    return NextResponse.json({ error: 'Invalid event' }, { status: 400 });
+  }
+  console.log(`[Webhook] 📨 Event received: ${event}`);
+
+  // 8) التوجيه حسب نوع الحدث
+  if (event === 'app.store.authorize') {
+    return handleAppStoreAuthorize(payload);
+  }
+
+  if (event !== 'order.created') {
+    // ⚠️ لا نرفض — أي حدث غير متوقع → 200 مع تجاهل آمن لمنع إعادة المحاولة.
+    console.log(`[Webhook] ℹ️ Ignoring unknown event: ${event}`);
     return NextResponse.json({ success: true, message: 'Event ignored' });
   }
 
-  // 8) جهّز المعالجة الخلفية
-  const orderId = payload.data?.id;
+  // من هنا: event === 'order.created'
+  const orderPayload = payload as SallaWebhookPayload;
+
+  // 9) استخرج orderId
+  const orderId = orderPayload.data?.id;
   if (typeof orderId !== 'number') {
     console.error('[Webhook] ❌ Missing order id in payload.data.id');
     return NextResponse.json({ error: 'Missing order id' }, { status: 400 });
   }
 
-  // 9) أطلق المعالجة في الخلفية (fire-and-forget) — لا await
-  //    إذا فشل إنشاء العميل (غياب المتغيرات البيئية)، نُسجّل الخطأ ونُرجع 200.
-  //    webhook handler يجب ألا يفشل أبداً — فشل الـ DB يجب ألّا يمنع سلة من
-  //    رؤية الاستجابة. السجلات ستُسجَّل في console للمراجعة.
+  // 10) جهّز Supabase client — فشل الإنشاء لا يمنع الرد بـ 200
   let supabase: SupabaseClient;
   try {
     supabase = buildSupabaseClient();
@@ -175,9 +316,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  runInBackground(orderId, payload, supabase);
+  // 11) أطلق المعالجة في الخلفية (fire-and-forget) — لا await
+  runInBackground(orderId, orderPayload, supabase);
 
-  // 10) ⚡ أرجع 200 فوراً — قبل أي عمل ثقيل
+  // 12) ⚡ أرجع 200 فوراً — قبل أي عمل ثقيل
   return NextResponse.json(
     {
       success: true,
@@ -201,6 +343,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     message: 'Salla Webhook Handler is active',
     timestamp: new Date().toISOString(),
     handledEvents: Array.from(HANDLED_EVENTS),
-    docs: 'POST order.created to this endpoint',
+    docs: 'POST order.created or app.store.authorize to this endpoint',
   });
 }
