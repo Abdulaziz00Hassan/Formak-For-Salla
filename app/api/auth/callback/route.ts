@@ -1,5 +1,5 @@
 /**
- * Salla OAuth — Step 2: Callback Handler (Token Exchange Only)
+ * Salla OAuth — Step 2: Callback Handler (Token Exchange + Merchant Storage)
  *
  * نقطة الرجوع من سلة بعد موافقة/رفض التاجر. GET فقط.
  *
@@ -17,12 +17,11 @@
  *  4) POST إلى https://accounts.salla.sa/oauth2/token لـ تبادل code
  *     بـ access_token/refresh_token (server-side فقط — client_secret
  *     لا يخرج من الخادم أبداً).
- *  5) ⚠️ في Custom Mode: رد تبادل التوكن لا يحوي merchant.
- *      سلة ترسل merchant + tokens عبر حدث webhook منفصل
- *      (app.store.authorize) على نفس رابط الـwebhook.
- *      → هذا الملف لا يكتب في قاعدة البيانات. يوجّه التاجر فقط لـ
- *        /dashboard/mappings?salla_connected=pending (سيتحوّل إلى "1"
- *        بعد وصول webhook authorize).
+ *  5) ⚠️ Custom Mode: رد تبادل التوكن قد لا يحوي merchant.
+ *      - سلة ترسل merchant عبر حدث webhook منفصل (app.installed).
+ *      - هذا الملف يستخرج merchant من حقول متعددة (merchant/id/store_id).
+ *      - إن وُجد: upsert في merchants بـ onConflict: salla_store_id.
+ *      - إن لم يوجد: redirect بـ ?salla_connected=awaiting_merchant.
  *
  * ⚠️ لا آلية تجديد تلقائي هنا — تُبنى في مرحلة منفصلة كما في Phase 7.
  * ⚠️ scope في رد سلة يجب أن يحوي offline_access. إن غاب → نُسجّل خطأ واضحاً
@@ -32,6 +31,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+
+import { createOrderRoutingSupabaseClient } from '@/app/lib/order-processor';
 
 const STATE_COOKIE_NAME = 'salla_oauth_state';
 const SALLA_TOKEN_ENDPOINT = 'https://accounts.salla.sa/oauth2/token';
@@ -139,7 +140,30 @@ async function exchangeCodeForToken(code: string): Promise<SallaTokenSuccess> {
     );
   }
 
+  // 🔍 تشخيص (مفتاح لفهم سبب الخطأ): اطبع مفاتيح الردّ لنعرف هل يحوي merchant.
+  // ⚠️ لا نطبع القيم — مفاتيح فقط (آمن، لا يكشف أسرار).
+  console.log(
+    `[Callback] ✅ Token exchange succeeded. Response keys: ${Object.keys(data).join(', ')}`
+  );
+
   return data;
+}
+
+function computeExpiresAt(expiresIn: number | undefined): Date {
+  if (typeof expiresIn === 'number' && Number.isFinite(expiresIn) && expiresIn > 0) {
+    return new Date(Date.now() + expiresIn * 1000);
+  }
+  // افتراضي: 14 يوم (مدة access_token الرسمية في OAuth سلة).
+  return new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+}
+
+function parseMerchantId(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string') {
+    const parsed = parseInt(raw, 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 }
 
 function buildRedirect(
@@ -195,17 +219,68 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
   }
 
-  // ── (4) المسار السعيد: تبادل التوكن + تحويل فقط ─────────────────
-  // ⚠️ Custom Mode: رد تبادل التوكن لا يحوي merchant.
-  //    سلة ترسل merchant + tokens لاحقاً عبر webhook app.store.authorize
-  //    (المعالَج في app/api/salla/webhook/route.ts).
-  //    هذا الملف لا يكتب في قاعدة البيانات — يوجّه التاجر فقط.
-  //    ?salla_connected=pending (وليس =1) → يتغير إلى "1" بعد نجاح webhook authorize.
+  // ── (4) المسار السعيد: تبادل التوكن + تخزين + تحويل ───────────────
+  // ⚠️ Custom Mode: رد تبادل التوكن قد لا يحوي merchant (نادر في سلة).
+  //    سلة ترسل merchant عبر حدث webhook منفصل (app.installed).
+  //    هذا الملف يستخرج merchant من حقول متعددة (merchant / id / store_id)
+  //    — إن لم يوجد، نُسجّل تحذيراً ونحوّل التاجر لـ dashboard
+  //    بحالة awaiting_merchant ليكمل الربط يدوياً.
   try {
-    await exchangeCodeForToken(code);
-    return buildRedirect(baseOrigin, SUCCESS_PATH, { salla_connected: 'pending' });
+    const tokenData = await exchangeCodeForToken(code);
+
+    // نحاول استخراج salla_store_id من حقول متعددة في الرد.
+    // ⚠️ التحويل يمر بـ unknown أولاً لأن SallaTokenSuccess interface لا يحوي
+    //    index signature، فلا يمكن التحويل المباشر إلى Record<string, unknown>.
+    const tokenDataRecord = tokenData as unknown as Record<string, unknown>;
+    const rawMerchant =
+      tokenDataRecord['merchant'] ??
+      tokenDataRecord['id'] ??
+      tokenDataRecord['store_id'];
+    const sallaStoreId = parseMerchantId(rawMerchant);
+
+    if (sallaStoreId === null) {
+      // ⚠️ لا merchant في رد التوكن — اعرض التحذير وحوّل لـ dashboard.
+      // التاجر سيحتاج إكمال الربط يدوياً (مثلاً عبر app.installed webhook).
+      console.warn(
+        '[Callback] ⚠️ Token response has no merchant field. Keys seen: ' +
+          Object.keys(tokenData).join(', ')
+      );
+      return buildRedirect(baseOrigin, SUCCESS_PATH, {
+        salla_connected: 'awaiting_merchant',
+      });
+    }
+
+    const expiresAt = computeExpiresAt(tokenData.expires_in);
+    const supabase = createOrderRoutingSupabaseClient();
+
+    const { error: dbError } = await supabase.from('merchants').upsert(
+      {
+        salla_store_id: sallaStoreId,
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        token_expires_at: expiresAt.toISOString(),
+      },
+      { onConflict: 'salla_store_id' }
+    );
+
+    if (dbError) {
+      console.error(
+        `[Callback] ❌ DB upsert failed for salla_store_id=${sallaStoreId}:`,
+        dbError
+      );
+      return buildRedirect(baseOrigin, SUCCESS_PATH, {
+        salla_connected: 'db_error',
+        salla_store_id: String(sallaStoreId),
+      });
+    }
+
+    console.log(
+      `[Callback] ✅ Merchant upserted: salla_store_id=${sallaStoreId}`
+    );
+    return buildRedirect(baseOrigin, SUCCESS_PATH, { salla_connected: '1' });
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'unknown_error';
+    console.error('[Callback] ❌ Token exchange or storage failed:', reason);
     return buildRedirect(baseOrigin, ERROR_PATH, { error: reason });
   }
 }

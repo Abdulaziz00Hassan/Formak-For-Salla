@@ -5,12 +5,20 @@
  *    أي عمل ثقيل (Regex، Supabase، WhatsApp) يحدث في الخلفية بعد الرد.
  *
  * الأحداث المدعومة:
- *  - order.created       → معالجة الطلب (Regex + lookup + WhatsApp) في الخلفية.
- *  - app.store.authorize → تخزين tokens التاجر في جدول merchants (Custom Mode OAuth).
+ *  - order.created   → معالجة الطلب (Regex + lookup + WhatsApp) في الخلفية.
+ *  - app.installed   → إشعار بتثبيت التطبيق. ⚠️ لا يحوي tokens — يُسجَّل
+ *                      ويُستخدم لربط merchant_id إن لزم.
  *
  * أي حدث آخر → 200 مع تجاهل آمن (لا رفض، حتى لا تُكرّر سلة الإرسال).
  *
  * مرجع: Formak-Ai-Context-v3.md + Formak-Phase7-to-Launch-v2.md (Phase 9).
+ *
+ * ⚠️ تصحيح مهم (اكتُشف من السجلات الحية 2026-07-26):
+ *    الحدث الفعلي من سلة هو `app.installed` وليس `app.store.authorize`
+ *    (الاسم في تعليمات Claude AI السابقة كان خاطئاً).
+ *    بنية app.installed: {event, merchant, data:{id, app_name, ...}}
+ *    لا تحوي access_token/refresh_token — التوكنات تُستبدل في OAuth callback
+ *    (POST /oauth2/token) وتُخزَّن هناك.
  */
 
 import crypto from 'crypto';
@@ -29,49 +37,60 @@ const SIGNATURE_HEADER = 'x-salla-signature';
 /** كل الأحداث التي يعرفها هذا الـ handler — للتوثيق والـ GET status. */
 const HANDLED_EVENTS: ReadonlySet<string> = new Set([
   'order.created',
-  'app.store.authorize',
+  'app.installed',
 ]);
 
-// ─── Types for app.store.authorize ──────────────────────────────────────
+// ─── Types for app.installed ────────────────────────────────────────────
 
-/** بنية `data` داخل حدث app.store.authorize. */
-interface SallaAuthorizeData {
-  access_token: string;
-  refresh_token: string;
-  /** طابع زمني مطلق بالثواني (Unix timestamp) — لا تجمعه مع Date.now(). */
-  expires: number;
-  scope: string;
-  token_type: string;
+/**
+ * بنية `data` داخل حدث app.installed.
+ * ⚠️ لا يحوي access_token/refresh_token — التوكنات تأتي من OAuth callback
+ *    وليس من هذا الـ webhook. هذا الحدث إشعار فقط.
+ */
+interface SallaInstalledData {
+  /** معرّف التثبيت نفسه (ليس salla_store_id). */
+  id: number;
+  app_name: string;
+  app_description: string;
+  /** نوع التطبيق — "private" لتطبيقات Private App كهذا. */
+  app_type: string;
+  /** الصلاحيات الممنوحة — يجب أن تحوي offline_access. */
+  app_scopes: string[];
+  /** ISO 8601 timestamp. */
+  installation_date: string;
+  /** نوع المتجر — "live" أو "demo" أو "partner". */
+  store_type: string;
 }
 
-/** بنية حدث app.store.authorize الكامل. */
-interface SallaAuthorizePayload {
-  event: 'app.store.authorize';
-  /** معرّف المتجر عند سلة (BigInt — يُستقبل كـ number). */
+/** بنية حدث app.installed الكامل. */
+interface SallaInstalledPayload {
+  event: 'app.installed';
+  /** معرّف المتجر عند سلة (BigInt — يُستقبل كـ number). المفتاح الفعلي للربط. */
   merchant: number;
   created_at: string;
-  data: SallaAuthorizeData;
+  data: SallaInstalledData;
 }
 
 /**
- * حارس نوع لـ app.store.authorize — يضمن أن كل حقل موجود وبنوعه الصحيح
- * قبل أي كتابة في قاعدة البيانات. مهم لأن هذا الحدث مختلف البنية تماماً
- * عن order.created (لا `items`، بل `tokens`).
+ * حارس نوع لـ app.installed — يضمن أن كل حقل موجود وبنوعه الصحيح
+ * قبل أي معالجة. هذا الحدث مختلف البنية تماماً عن order.created.
  */
-function isSallaAuthorizePayload(value: unknown): value is SallaAuthorizePayload {
+function isSallaInstalledPayload(value: unknown): value is SallaInstalledPayload {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  if (v['event'] !== 'app.store.authorize') return false;
+  if (v['event'] !== 'app.installed') return false;
   if (typeof v['merchant'] !== 'number') return false;
   if (typeof v['created_at'] !== 'string') return false;
   if (typeof v['data'] !== 'object' || v['data'] === null) return false;
   const d = v['data'] as Record<string, unknown>;
   return (
-    typeof d['access_token'] === 'string' &&
-    typeof d['refresh_token'] === 'string' &&
-    typeof d['expires'] === 'number' &&
-    typeof d['scope'] === 'string' &&
-    typeof d['token_type'] === 'string'
+    typeof d['id'] === 'number' &&
+    typeof d['app_name'] === 'string' &&
+    typeof d['app_description'] === 'string' &&
+    typeof d['app_type'] === 'string' &&
+    Array.isArray(d['app_scopes']) &&
+    typeof d['installation_date'] === 'string' &&
+    typeof d['store_type'] === 'string'
   );
 }
 
@@ -140,79 +159,69 @@ function buildSupabaseClient() {
   return createOrderRoutingSupabaseClient();
 }
 
-// ─── app.store.authorize handler ─────────────────────────────────────────
+// ─── app.installed handler ───────────────────────────────────────────────
 
 /**
- * يعالج حدث app.store.authorize من Custom Mode OAuth في سلة.
+ * يعالج حدث app.installed من سلة.
  *
- * ⚠️ الفرق الجوهري عن order.created:
- *   - هذا الحدث يصل بعد موافقة التاجر على تثبيت التطبيق.
- *   - يحوي merchant (معرّف المتجر) + التوكنات مباشرة.
- *   - الكتابة تتم هنا، وليس في app/api/auth/callback/route.ts.
+ * ⚠️ الفرق الجوهري عن التصميم الأولي (المُكتشف من السجلات الحية):
+ *   - هذا الحدث لا يحوي access_token/refresh_token/expires.
+ *   - التوكنات تُستبدل في OAuth callback (POST /oauth2/token) وتُخزَّن هناك.
+ *   - هذا الـ webhook إشعار فقط — يُسجَّل ويُستخدم لربط merchant_id
+ *     إن لزم (مثلاً لتأكيد أن التاجر فعّل التطبيق فعلاً).
  *
- * @returns NextResponse بحالة 200 عند النجاح/الفشل الآمن، 400 عند payload غير صالح.
+ * ⚠️ التصميم الحالي:
+ *   - نُسجّل الـ event مع merchant و installation_id و scopes.
+ *   - لا نكتب في merchants لأن التوكنات موجودة بالفعل في الـ callback.
+ *   - إن كانت callback قد خزّنت صفاً بـ salla_store_id=placeholder، يمكن
+ *     لاحقاً بناء منطق UPDATE هنا لربط merchant_id الفعلي.
+ *
+ * @returns NextResponse بحالة 200 دائماً (الفشل الآمن لا يُرفض — يمنع إعادة المحاولة).
  */
-async function handleAppStoreAuthorize(
+async function handleAppInstalled(
   rawPayload: unknown
 ): Promise<NextResponse> {
-  if (!isSallaAuthorizePayload(rawPayload)) {
-    console.error('[Webhook] ❌ app.store.authorize payload failed type guard');
+  if (!isSallaInstalledPayload(rawPayload)) {
+    console.error('[Webhook] ❌ app.installed payload failed type guard');
     return NextResponse.json(
-      { success: false, message: 'Invalid authorize payload structure' },
+      { success: false, message: 'Invalid app.installed payload structure' },
       { status: 400 }
     );
   }
 
-  let supabase: SupabaseClient;
-  try {
-    supabase = buildSupabaseClient();
-  } catch (clientErr) {
-    const message = clientErr instanceof Error ? clientErr.message : 'Unknown error';
-    console.error(`[Webhook] ❌ Failed to build Supabase client for authorize:`, message);
-    // 200 رغم الخطأ لمنع سلة من إعادة المحاولة تلقائياً (best practice للـ webhooks).
-    return NextResponse.json(
-      { success: false, message: 'Supabase configuration error' },
-      { status: 200 }
-    );
-  }
-
-  // expires = طابع زمني مطلق بالثواني (Unix timestamp) → نضرب في 1000 فقط.
-  // لا نجمعه مع Date.now() — هذا timestamp مستقل عن وقت الاستلام.
-  const tokenExpiresAt = new Date(rawPayload.data.expires * 1000).toISOString();
-
-  const { error } = await supabase
-    .from('merchants')
-    .upsert(
-      {
-        salla_store_id: rawPayload.merchant,
-        access_token: rawPayload.data.access_token,
-        refresh_token: rawPayload.data.refresh_token,
-        token_expires_at: tokenExpiresAt,
-      },
-      { onConflict: 'salla_store_id' }
-    );
-
-  if (error) {
-    console.error(
-      `[Webhook] ❌ Merchant upsert failed for salla_store_id=${rawPayload.merchant}:`,
-      error
-    );
-    // 200 رغم الخطأ لمنع سلة من إعادة المحاولة.
-    return NextResponse.json(
-      {
-        success: false,
-        message: 'Merchant upsert failed',
-        error: error.message,
-      },
-      { status: 200 }
-    );
-  }
+  const hasOfflineAccess = rawPayload.data.app_scopes.includes('offline_access');
 
   console.log(
-    `[Webhook] ✅ Merchant upserted for app.store.authorize: salla_store_id=${rawPayload.merchant}`
+    `[Webhook] 📥 app.installed received: ` +
+      `merchant=${rawPayload.merchant}, ` +
+      `installation_id=${rawPayload.data.id}, ` +
+      `app_name="${rawPayload.data.app_name}", ` +
+      `app_type=${rawPayload.data.app_type}, ` +
+      `store_type=${rawPayload.data.store_type}, ` +
+      `scopes_count=${rawPayload.data.app_scopes.length}, ` +
+      `offline_access=${hasOfflineAccess ? 'YES' : 'NO ⚠️'}`
   );
+
+  if (!hasOfflineAccess) {
+    console.warn(
+      '[Webhook] ⚠️ app.installed is missing offline_access scope — ' +
+        'refresh_token will NOT be delivered in OAuth callback.'
+    );
+  }
+
+  // ⚠️ ملاحظة على التصميم: هذا الحدث إشعار فقط. التوكنات في OAuth callback.
+  //    لا نكتب في merchants هنا لأن:
+  //    (أ) لا نملك access_token/refresh_token في هذا الـ payload.
+  //    (ب) الـ callback خزّنها بالفعل (في المسار السعيد).
+  //    (ج) التكرار هنا سيُنشئ صفوفاً ناقصة (merchant بدون tokens).
+
   return NextResponse.json(
-    { success: true, message: 'Merchant authorized' },
+    {
+      success: true,
+      message: 'App installation acknowledged',
+      merchant: rawPayload.merchant,
+      installationId: rawPayload.data.id,
+    },
     { status: 200 }
   );
 }
@@ -279,8 +288,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   console.log(`[Webhook] 📨 Event received: ${event}`);
 
   // 8) التوجيه حسب نوع الحدث
-  if (event === 'app.store.authorize') {
-    return handleAppStoreAuthorize(payload);
+  if (event === 'app.installed') {
+    return handleAppInstalled(payload);
   }
 
   if (event !== 'order.created') {
@@ -343,6 +352,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     message: 'Salla Webhook Handler is active',
     timestamp: new Date().toISOString(),
     handledEvents: Array.from(HANDLED_EVENTS),
-    docs: 'POST order.created or app.store.authorize to this endpoint',
+    docs: 'POST order.created or app.installed to this endpoint',
   });
 }
