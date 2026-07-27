@@ -17,11 +17,14 @@
  *  4) POST إلى https://accounts.salla.sa/oauth2/token لـ تبادل code
  *     بـ access_token/refresh_token (server-side فقط — client_secret
  *     لا يخرج من الخادم أبداً).
- *  5) ⚠️ Custom Mode: رد تبادل التوكن قد لا يحوي merchant.
- *      - سلة ترسل merchant عبر حدث webhook منفصل (app.installed).
- *      - هذا الملف يستخرج merchant من حقول متعددة (merchant/id/store_id).
- *      - إن وُجد: upsert في merchants بـ onConflict: salla_store_id.
- *      - إن لم يوجد: redirect بـ ?salla_connected=awaiting_merchant.
+ *  5) ⚠️ Custom Mode OAuth في سلة لا يحوي `merchant` في رد تبادل التوكن
+ *     (مُثبت 2026-07-27 من السجلات — المفاتيح الفعلية:
+ *      access_token, expires_in, refresh_token, scope, token_type).
+ *      للحصول على salla_store_id:
+ *      1) محاولة استخراج مباشر من الرد (حقول متعددة للأمان).
+ *      2) استدعاء Salla User Info API (/admin/v2/me) بـ access_token.
+ *      3) graceful degradation → redirect بـ ?salla_connected=awaiting_merchant.
+ *  6) upsert في merchants بـ onConflict: salla_store_id.
  *
  * ⚠️ لا آلية تجديد تلقائي هنا — تُبنى في مرحلة منفصلة كما في Phase 7.
  * ⚠️ scope في رد سلة يجب أن يحوي offline_access. إن غاب → نُسجّل خطأ واضحاً
@@ -166,6 +169,87 @@ function parseMerchantId(raw: unknown): number | null {
   return null;
 }
 
+/**
+ * يجلب معلومات التاجر من Salla User Info API باستخدام access_token.
+ *
+ * ⚠️ السبب في وجود هذه الدالة (مُكتشف من السجلات الحية 2026-07-27):
+ *    Custom Mode OAuth في سلة **لا يُرجع `merchant` في رد تبادل التوكن**.
+ *    المفاتيح الفعلية: `access_token, expires_in, refresh_token, scope, token_type`.
+ *    للحصول على `salla_store_id` يجب استدعاءٌ ثانٍ.
+ *
+ * المنهجية:
+ *   GET https://api.salla.dev/admin/v2/me
+ *   Authorization: Bearer {access_token}
+ *   ← يعيد `{ status, success, data: { id, name, email, ... } }` حيث `data.id` هو salla_store_id.
+ *
+ * ⚠️ timeout 5s عبر AbortController — لا نريد أن نُعطّل الـ OAuth إن كانت
+ *    واجهة Salla بطيئة مؤقتاً. عند الفشل → null → awaiting_merchant.
+ *
+ * @param accessToken - access_token الناتج من exchangeCodeForToken
+ * @returns salla_store_id كرقم، أو null عند أي فشل (للـ graceful degradation)
+ */
+async function fetchSallaMerchantInfo(accessToken: string): Promise<number | null> {
+  const controller = new AbortController();
+  const timeoutMs = 5000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch('https://api.salla.dev/admin/v2/me', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      console.error(
+        `[Callback] ❌ Salla user info API returned HTTP ${res.status}`
+      );
+      return null;
+    }
+
+    let data: unknown;
+    try {
+      data = await res.json();
+    } catch (err) {
+      console.error(
+        '[Callback] ❌ Salla user info API returned non-JSON:',
+        err instanceof Error ? err.message : 'Unknown'
+      );
+      return null;
+    }
+
+    // Salla تُلفّ الرد في { status, success, data: { id, name, email, ... } }
+    if (typeof data !== 'object' || data === null) return null;
+    const outer = data as Record<string, unknown>;
+    const inner = outer['data'];
+    if (typeof inner !== 'object' || inner === null) return null;
+    const id = (inner as Record<string, unknown>)['id'];
+    if (typeof id === 'number' && Number.isFinite(id)) return id;
+    if (typeof id === 'string') {
+      const parsed = parseInt(id, 10);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      console.error(
+        `[Callback] ❌ Salla user info API timed out after ${timeoutMs}ms`
+      );
+    } else {
+      console.error(
+        '[Callback] ❌ Salla user info API call failed:',
+        err instanceof Error ? err.message : 'Unknown error'
+      );
+    }
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function buildRedirect(
   baseOrigin: string,
   path: string,
@@ -219,16 +303,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
   }
 
-  // ── (4) المسار السعيد: تبادل التوكن + تخزين + تحويل ───────────────
-  // ⚠️ Custom Mode: رد تبادل التوكن قد لا يحوي merchant (نادر في سلة).
-  //    سلة ترسل merchant عبر حدث webhook منفصل (app.installed).
-  //    هذا الملف يستخرج merchant من حقول متعددة (merchant / id / store_id)
-  //    — إن لم يوجد، نُسجّل تحذيراً ونحوّل التاجر لـ dashboard
-  //    بحالة awaiting_merchant ليكمل الربط يدوياً.
+  // ── (4) المسار السعيد: تبادل التوكن + استخراج merchant + تخزين + تحويل ─
+  // ⚠️ Custom Mode OAuth في سلة: رد تبادل التوكن لا يحوي merchant
+  //    (مُثبت من السجلات الحية 2026-07-27 — المفاتيح الفعلية:
+  //    access_token, expires_in, refresh_token, scope, token_type).
+  //    للحصول على salla_store_id:
+  //    1) أولاً: استخراج مباشر من الرد (merchant / id / store_id) — للأمان.
+  //    2) ثانياً: استدعاء Salla User Info API (/admin/v2/me) بـ access_token.
+  //    3) إن فشل كل شيء: redirect بـ ?salla_connected=awaiting_merchant
+  //       (التاجر يبقى في dashboard، dashboard يعرض رسالة "لم يكتمل الربط").
   try {
     const tokenData = await exchangeCodeForToken(code);
 
-    // نحاول استخراج salla_store_id من حقول متعددة في الرد.
+    // (1) محاولة استخراج salla_store_id من حقول متعددة في الرد.
     // ⚠️ التحويل يمر بـ unknown أولاً لأن SallaTokenSuccess interface لا يحوي
     //    index signature، فلا يمكن التحويل المباشر إلى Record<string, unknown>.
     const tokenDataRecord = tokenData as unknown as Record<string, unknown>;
@@ -236,14 +323,20 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       tokenDataRecord['merchant'] ??
       tokenDataRecord['id'] ??
       tokenDataRecord['store_id'];
-    const sallaStoreId = parseMerchantId(rawMerchant);
+    let sallaStoreId = parseMerchantId(rawMerchant);
+
+    // (2) لو غير موجود → استدعاء Salla User Info API
+    if (sallaStoreId === null) {
+      console.log(
+        '[Callback] 🔍 merchant not in token response — fetching from Salla user info API...'
+      );
+      sallaStoreId = await fetchSallaMerchantInfo(tokenData.access_token);
+    }
 
     if (sallaStoreId === null) {
-      // ⚠️ لا merchant في رد التوكن — اعرض التحذير وحوّل لـ dashboard.
-      // التاجر سيحتاج إكمال الربط يدوياً (مثلاً عبر app.installed webhook).
+      // (3) فشل كل المحاولات — graceful degradation
       console.warn(
-        '[Callback] ⚠️ Token response has no merchant field. Keys seen: ' +
-          Object.keys(tokenData).join(', ')
+        '[Callback] ⚠️ Could not determine salla_store_id from token response or user info API'
       );
       return buildRedirect(baseOrigin, SUCCESS_PATH, {
         salla_connected: 'awaiting_merchant',
