@@ -300,43 +300,60 @@ async function linkTokensToPendingMerchant(
     return false;
   }
 
-  // 1) ابحث عن صف معلَّق — الأحدث أولاً (DESC created_at + LIMIT 1).
+  // 1) ابحث عن صف معلَّق — حتى 5 محاولات بفاصل 700ms.
+  //    السبب: app.installed webhook قد يصل بعد callback (سباق مع OAuth).
+  //    الانتظار القصير يعطي webhook وقتاً للوصول بدون تأخير التحويل تأخيراً محسوساً.
+  //
+  // ⚠️ منطق الإيقاف:
+  //   - خطأ/استثناء في SELECT → return false فوراً (لا فائدة من إعادة المحاولة).
+  //   - صف وُجد → break + UPDATE.
+  //   - صفر صفوف متتالية 5 مرات → console.error ناعم + return false (الـcallback
+  //     يكمل بـ salla_connected=pending كما هو مصمَّم).
   let pendingRowId: string | null = null;
-  try {
-    const { data, error } = await supabase
-      .from('merchants')
-      .select('id')
-      .is('access_token', null)
-      .order('created_at', { ascending: false })
-      .limit(1);
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const { data, error } = await supabase
+        .from('merchants')
+        .select('id')
+        .is('access_token', null)
+        .order('created_at', { ascending: false })
+        .limit(1);
 
-    if (error) {
-      const e = error as { message?: string };
+      if (error) {
+        const e = error as { message?: string };
+        console.error(
+          `[Callback] ❌ Failed to search for pending merchant row (attempt ${attempt}/5):`,
+          e.message ?? 'Unknown Supabase error'
+        );
+        return false;
+      }
+
+      if (Array.isArray(data) && data.length > 0) {
+        const first = data[0] as { id?: unknown };
+        if (typeof first.id === 'string' && first.id.length > 0) {
+          pendingRowId = first.id;
+          break; // وُجد الصف — توقف عن الحلقة وامضِ إلى UPDATE
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
       console.error(
-        '[Callback] ❌ Failed to search for pending merchant row:',
-        e.message ?? 'Unknown Supabase error'
+        `[Callback] ❌ Pending merchant lookup exception (attempt ${attempt}/5):`,
+        message
       );
       return false;
     }
 
-    if (Array.isArray(data) && data.length > 0) {
-      const first = data[0] as { id?: unknown };
-      if (typeof first.id === 'string' && first.id.length > 0) {
-        pendingRowId = first.id;
-      }
+    // لم نجد صفاً في هذه المحاولة — انتظر 700ms قبل المحاولة التالية.
+    // ⚠️ لا انتظار بعد المحاولة الأخيرة (تحسين بسيط لتجنّب 700ms هدر).
+    if (attempt < 5) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 700));
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    console.error(
-      '[Callback] ❌ Pending merchant lookup exception:',
-      message
-    );
-    return false;
   }
 
   if (pendingRowId === null) {
     console.error(
-      '[Callback] No pending merchant row found to update — did app.installed webhook arrive yet?'
+      '[Callback] No pending merchant row after 5 attempts (~3.5s) — webhook may have failed or Salla delivered it very late'
     );
     return false;
   }
