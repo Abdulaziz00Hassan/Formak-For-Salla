@@ -36,6 +36,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { createOrderRoutingSupabaseClient } from '@/app/lib/order-processor';
 
 const STATE_COOKIE_NAME = 'salla_oauth_state';
 const SALLA_TOKEN_ENDPOINT = 'https://accounts.salla.sa/oauth2/token';
@@ -259,6 +261,123 @@ async function fetchSallaMerchantInfo(accessToken: string): Promise<number | nul
   }
 }
 
+/**
+ * يربط التوكنات المستلَمة من OAuth بصف `merchants` المعلَّق (placeholder).
+ *
+ * ⚠️ خلفية التصميم (مُحدَّثة 2026-07-27 — الجولة 6):
+ *    - `app.installed` webhook يصل أولاً → يُنشئ صفاً في `merchants` عبر
+ *      upsert بـ `{salla_store_id}` فقط (الحقول NOT NULL الأخرى — tokens —
+ *      تُملأ لاحقاً من هنا).
+ *    - OAuth callback يصل ثانياً → يجد الصف المعلَّق عبر
+ *      `WHERE access_token IS NULL ORDER BY created_at DESC LIMIT 1`
+ *      ويُحدّثه بالتوكنات.
+ *    - الترتيب العكسي (callback قبل webhook) مدعوم أيضاً: SELECT سيُعيد
+ *      صفر صفوف → console.error فقط، لا انكسار.
+ *
+ * ⚠️ تفسير `WHERE access_token IS NULL`:
+ *    - يضمن أننا نُحدّث **الصف المعلَّق الأحدث فقط** (الذي أنشأه webhook
+ *      ولم تُحدَّث توكناته بعد).
+ *    - إن كان للتاجر صف قديم مكتمل (tokens موجودة)، لن نلمسه — نتجنّب
+ *      استبدال توكنات صالحة بمجموعة جديدة قد تكون مُلغاة.
+ *    - هذا أيضاً يمنع تطابقاً خاطئاً مع صفوف متاجر أخرى.
+ *
+ * @returns true عند نجاح الـUPDATE (أو عدم وجود صف — قرار ناعم).
+ */
+async function linkTokensToPendingMerchant(
+  accessToken: string,
+  refreshToken: string,
+  expiresIn: number
+): Promise<boolean> {
+  let supabase: SupabaseClient;
+  try {
+    supabase = createOrderRoutingSupabaseClient();
+  } catch (clientErr) {
+    const message = clientErr instanceof Error ? clientErr.message : 'Unknown error';
+    console.error(
+      '[Callback] ❌ Cannot build Supabase client for token linking:',
+      message
+    );
+    return false;
+  }
+
+  // 1) ابحث عن صف معلَّق — الأحدث أولاً (DESC created_at + LIMIT 1).
+  let pendingRowId: string | null = null;
+  try {
+    const { data, error } = await supabase
+      .from('merchants')
+      .select('id')
+      .is('access_token', null)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (error) {
+      const e = error as { message?: string };
+      console.error(
+        '[Callback] ❌ Failed to search for pending merchant row:',
+        e.message ?? 'Unknown Supabase error'
+      );
+      return false;
+    }
+
+    if (Array.isArray(data) && data.length > 0) {
+      const first = data[0] as { id?: unknown };
+      if (typeof first.id === 'string' && first.id.length > 0) {
+        pendingRowId = first.id;
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error(
+      '[Callback] ❌ Pending merchant lookup exception:',
+      message
+    );
+    return false;
+  }
+
+  if (pendingRowId === null) {
+    console.error(
+      '[Callback] No pending merchant row found to update — did app.installed webhook arrive yet?'
+    );
+    return false;
+  }
+
+  // 2) حساب token_expires_at — expires_in بالثواني (OAuth2 spec).
+  const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+
+  // 3) UPDATE الصف المعلَّق بالتوكنات.
+  try {
+    const { error } = await supabase
+      .from('merchants')
+      .update({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        token_expires_at: expiresAt,
+      })
+      .eq('id', pendingRowId);
+
+    if (error) {
+      const e = error as { message?: string };
+      console.error(
+        `[Callback] ❌ Failed to update pending merchant ${pendingRowId}:`,
+        e.message ?? 'Unknown Supabase error'
+      );
+      return false;
+    }
+
+    console.log(
+      `[Callback] ✅ Pending merchant ${pendingRowId} updated with tokens (expires_at=${expiresAt})`
+    );
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error(
+      `[Callback] ❌ Merchant update exception for ${pendingRowId}:`,
+      message
+    );
+    return false;
+  }
+}
+
 function buildRedirect(
   baseOrigin: string,
   path: string,
@@ -312,19 +431,41 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
   }
 
-  // ── (4) المسار السعيد: تبادل التوكن + استدعاء تشخيصي + تحويل ──────
-  // ⚠️ ملاحظة حرجة (مُحدّثة بناءً على تعليمات Claude AI النهائية):
-  //    - Custom Mode OAuth في سلة لا يحوي `merchant` في رد التوكن
-  //      (مُثبت 2026-07-27 — المفاتيح الفعلية:
-  //       access_token, expires_in, refresh_token, scope, token_type).
-  //    - نقوم باستدعاء user info API كـ **diagnostic/supplementary فقط**.
-  //    - أي فشل في هذا الاستدعاء (4xx/5xx/timeout) **لا يوقف الـcallback**
-  //      — التاجر يجب ألّا يرى فشلاً هنا.
-  //    - merchants يُكتب فعليًا عبر webhook app.store.authorize
-  //      (معالَج في app/api/salla/webhook/route.ts) — **مستقل تماماً**.
-  //    - هذا الملف يوجّه دائماً إلى ?salla_connected=pending.
+  // ── (4) المسار السعيد: تبادل التوكن + ربط بصف معلَّق + تشخيص + تحويل ──
+  // ⚠️ ملاحظة حرجة (مُحدَّثة — الجولة 6):
+  //    1) Custom Mode OAuth في سلة لا يحوي `merchant` في رد التوكن
+  //       (مُثبت 2026-07-27 — المفاتيح الفعلية:
+  //        access_token, expires_in, refresh_token, scope, token_type).
+  //    2) الترتيب النموذجي للأحداث:
+  //         (أ) `app.installed` webhook يصل أولاً → يُنشئ صف placeholder
+  //             في `merchants` بـ `{salla_store_id}` فقط (توكنات NULL).
+  //         (ب) OAuth callback يصل ثانياً → يجد الصف المعلَّق ويملأ التوكنات.
+  //       (الترتيب العكسي مدعوم أيضاً — console.error ناعم، لا انكسار).
+  //    3) `fetchSallaMerchantInfo` يبقى **تشخيصياً بحتاً** (لا يُستخدم لربط
+  //       الـDB). مستقبلاً عند تأكيد بنية الرد من السجلات قد نستخدمه لربط
+  //       `salla_store_id` بدلاً من الاعتماد على webhook فقط.
+  //    4) `salla_connected`:
+  //         - `'1'`   عند نجاح UPDATE للتوكنات (التاجر جاهز لاستقبال الطلبات).
+  //         - `'pending'` عند عدم وجود صف معلَّق أو فشل التحديث (webhook لم يصل بعد).
   try {
     const tokenData = await exchangeCodeForToken(code);
+
+    // 🆕 ربط التوكنات بصف merchants المعلَّق — SELECT WHERE access_token IS NULL
+    //    ثم UPDATE بالـid. فشل المنطق كله (SELECT أو UPDATE) → salla_connected=pending.
+    let tokensLinked = false;
+    try {
+      tokensLinked = await linkTokensToPendingMerchant(
+        tokenData.access_token,
+        tokenData.refresh_token,
+        tokenData.expires_in
+      );
+    } catch (linkErr) {
+      // لن يحدث — linkTokensToPendingMerchant تلتقط كل الأخطاء.
+      console.error(
+        '[Callback] ❌ Unexpected error in linkTokensToPendingMerchant (non-blocking):',
+        linkErr instanceof Error ? linkErr.message : 'Unknown'
+      );
+    }
 
     // 🆕 استدعاء user info — best-effort، لفّه بـ try/catch مستقل
     //    (دفاع مزدوج — الدالة نفسها فيها try/catch خاص بها أيضاً).
@@ -348,8 +489,20 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // ⚠️ دائماً redirect لـ pending — الكتابة الفعلية في webhook
-    return buildRedirect(baseOrigin, SUCCESS_PATH, { salla_connected: 'pending' });
+    // 🆕 قرار التحويل النهائي: '1' عند نجاح الربط، 'pending' عند الفشل/الغياب.
+    const finalStatus: '1' | 'pending' = tokensLinked ? '1' : 'pending';
+    if (tokensLinked) {
+      console.log(
+        '[Callback] ✅ Tokens linked — redirecting with salla_connected=1'
+      );
+    } else {
+      console.log(
+        '[Callback] ⚠️ Tokens not linked — redirecting with salla_connected=pending'
+      );
+    }
+    return buildRedirect(baseOrigin, SUCCESS_PATH, {
+      salla_connected: finalStatus,
+    });
   } catch (err) {
     // فشل تبادل التوكن (أو قراءة body) — هذا خطأ حقيقي يستحق صفحة الخطأ
     const reason = err instanceof Error ? err.message : 'unknown_error';

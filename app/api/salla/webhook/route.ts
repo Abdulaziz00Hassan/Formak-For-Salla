@@ -99,6 +99,13 @@ type SignatureCheckResult =
   | { ok: true }
   | { ok: false; status: 401 | 500; message: string };
 
+/** بنية مبسّطة لرسالة خطأ Supabase — للتسجيل التشخيصي فقط. */
+interface SupabaseMaybeError {
+  code?: string;
+  message?: string;
+  details?: string;
+}
+
 /**
  * يتحقق من توقيع HMAC SHA256.
  *
@@ -159,6 +166,68 @@ function buildSupabaseClient() {
   return createOrderRoutingSupabaseClient();
 }
 
+/**
+ * يضمن وجود صف في `merchants` بـ `salla_store_id` الصحيح.
+ *
+ * ⚠️ ملاحظة حرجة: هذا الـupsert **لا يمس التوكنات إطلاقاً** — `{salla_store_id}`
+ *    فقط كـ payload. التوكنات تُكتب من OAuth callback حصرياً (انظر
+ *    app/api/auth/callback/route.ts).
+ *
+ * المنطق:
+ *   - إن وُجد صف بنفس salla_store_id → لا تغيير (الـonConflict يحمي التوكنات).
+ *   - إن لم يوجد → INSERT صف جديد بـ salla_store_id فقط.
+ *
+ * ⚠️ قيد schema: `merchants.access_token` و `refresh_token` و `token_expires_at`
+ *    كلها NOT NULL. هذا يعني أن INSERT جديد بدون توكنات سيفشل (متعمَّد —
+ *    لا نريد صفاً ناقصاً). السلوك الآمن: في هذه الحالة، الـcallback سيُحدّث
+ *    الصف الموجود مسبقاً عبر UPDATE بـ WHERE access_token IS NULL.
+ *
+ * @returns true عند نجاح الـupsert (بما فيه no-op)، false عند الفشل.
+ */
+async function ensureMerchantRow(sallaStoreId: number): Promise<boolean> {
+  let supabase: SupabaseClient;
+  try {
+    supabase = buildSupabaseClient();
+  } catch (clientErr) {
+    const message = clientErr instanceof Error ? clientErr.message : 'Unknown error';
+    console.error(
+      `[Webhook] ❌ Cannot build Supabase client for merchant upsert:`,
+      message
+    );
+    return false;
+  }
+
+  try {
+    const { error } = await supabase
+      .from('merchants')
+      .upsert(
+        { salla_store_id: sallaStoreId },
+        { onConflict: 'salla_store_id' }
+      );
+
+    if (error) {
+      const e = error as SupabaseMaybeError;
+      console.error(
+        `[Webhook] ❌ Failed to upsert merchant row for salla_store_id=${sallaStoreId}:`,
+        e.message ?? 'Unknown Supabase error'
+      );
+      return false;
+    }
+
+    console.log(
+      `[Webhook] ✅ Merchant row ensured for salla_store_id=${sallaStoreId} (tokens untouched — owned by OAuth callback)`
+    );
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error(
+      `[Webhook] ❌ Merchant upsert exception for salla_store_id=${sallaStoreId}:`,
+      message
+    );
+    return false;
+  }
+}
+
 // ─── app.installed handler ───────────────────────────────────────────────
 
 /**
@@ -167,14 +236,19 @@ function buildSupabaseClient() {
  * ⚠️ الفرق الجوهري عن التصميم الأولي (المُكتشف من السجلات الحية):
  *   - هذا الحدث لا يحوي access_token/refresh_token/expires.
  *   - التوكنات تُستبدل في OAuth callback (POST /oauth2/token) وتُخزَّن هناك.
- *   - هذا الـ webhook إشعار فقط — يُسجَّل ويُستخدم لربط merchant_id
- *     إن لزم (مثلاً لتأكيد أن التاجر فعّل التطبيق فعلاً).
  *
- * ⚠️ التصميم الحالي:
- *   - نُسجّل الـ event مع merchant و installation_id و scopes.
- *   - لا نكتب في merchants لأن التوكنات موجودة بالفعل في الـ callback.
- *   - إن كانت callback قد خزّنت صفاً بـ salla_store_id=placeholder، يمكن
- *     لاحقاً بناء منطق UPDATE هنا لربط merchant_id الفعلي.
+ * ⚠️ التصميم الحالي (مُحدَّث — 2026-07-27):
+ *   - **نضمن وجود الصف** في `merchants` عبر upsert بـ `{salla_store_id}` فقط.
+ *     هذا يضمن أن OAuth callback سيجد صفاً بـ access_token IS NULL ليُحدّثه.
+ *   - **لا نلمس التوكنات إطلاقاً** — upsert مع onConflict='salla_store_id'
+ *     يحمي أي توكنات موجودة مسبقاً. التوكنات تُكتب حصرياً من callback.
+ *   - يُسجَّل الـ event مع merchant و installation_id و scopes.
+ *
+ * الترتيب النموذجي للأحداث:
+ *   1) التاجر يثبّت التطبيق → `app.installed` يصل → upsert ينشئ الصف.
+ *   2) التاجر يوافق على OAuth → callback يصل → UPDATE يضع التوكنات.
+ *   (أو العكس — كلا المسارين مدعومان: المنطق في callback يتسامح مع
+ *    غياب الصف).
  *
  * @returns NextResponse بحالة 200 دائماً (الفشل الآمن لا يُرفض — يمنع إعادة المحاولة).
  */
@@ -209,11 +283,16 @@ async function handleAppInstalled(
     );
   }
 
-  // ⚠️ ملاحظة على التصميم: هذا الحدث إشعار فقط. التوكنات في OAuth callback.
-  //    لا نكتب في merchants هنا لأن:
-  //    (أ) لا نملك access_token/refresh_token في هذا الـ payload.
-  //    (ب) الـ callback خزّنها بالفعل (في المسار السعيد).
-  //    (ج) التكرار هنا سيُنشئ صفوفاً ناقصة (merchant بدون tokens).
+  // 🆕 ضمان وجود صف merchants بـ salla_store_id الصحيح — لا نلمس التوكنات.
+  //    هذا يُمكّن OAuth callback من إيجاد الصف وتحديثه بـ tokens لاحقاً.
+  const upsertOk = await ensureMerchantRow(rawPayload.merchant);
+  if (!upsertOk) {
+    // ⚠️ نسجّل الفشل لكن لا نُرجع 4xx/5xx — سلة ستُكرّر المحاولة إلى ما لا نهاية
+    //    وتُلوِّث سجلاتنا. الـcallback مستقل ويمكنه إنشاء الصف إذا لزم.
+    console.warn(
+      `[Webhook] ⚠️ Merchant upsert failed — OAuth callback may still complete the row`
+    );
+  }
 
   return NextResponse.json(
     {
