@@ -155,7 +155,7 @@ async function processSingleItem(
   merchantId: string | null
 ): Promise<OrderItemProcessingResult> {
   const result: OrderItemProcessingResult = {
-    productId: item.product_id,
+    productId: item.product.id,
     productName: item.name,
     hasNote: Boolean(item.note),
     note: item.note,
@@ -169,7 +169,7 @@ async function processSingleItem(
   };
 
   try {
-    console.log(`[Processor]   📦 Item: ${item.name} (product_id=${item.product_id})`);
+    console.log(`[Processor]   📦 Item: ${item.name} (product_id=${item.product.id})`);
 
     // تطبيع نص الملاحظة: المنتج قد يصل بدون ملاحظة (null) — يجب ألّا يُسقط
     //   بقية المسار (lookup + WhatsApp + log). الـ Regex يعيد null عند عدم المطابقة
@@ -198,7 +198,7 @@ async function processSingleItem(
     const mapping = await lookupDesignerMapping(
       deps.supabase,
       merchantId,
-      item.product_id
+      item.product.id
     );
 
     // يُعرَّفان خارج `if/else` لأن logRouting أدناه يحتاج قراءتهما لاحقاً.
@@ -209,7 +209,7 @@ async function processSingleItem(
 
     if (!mapping) {
       console.log(
-        `[Processor]     ⚠️ No designer mapping found for product_id=${item.product_id}`
+        `[Processor]     ⚠️ No designer mapping found for product_id=${item.product.id}`
       );
       result.status = 'skipped';
       result.whatsappStatus = 'skipped';
@@ -270,7 +270,7 @@ async function processSingleItem(
     // 4) كتابة السجل في order_routing_log — الحالة تأتي من نتيجة الإرسال الفعلية
     const logResult = await logRouting(deps.supabase, merchantId, {
       salla_order_id: orderId,
-      salla_product_id: item.product_id,
+      salla_product_id: item.product.id,
       raw_note: noteText,
       personalization_detected: result.personalizationDetected,
       extracted_name: result.extractedName,
@@ -282,7 +282,7 @@ async function processSingleItem(
 
     if (!logResult.ok) {
       console.error(
-        `[Processor]     ❌ Routing log insert failed for product_id=${item.product_id}: ${logResult.error}`
+        `[Processor]     ❌ Routing log insert failed for product_id=${item.product.id}: ${logResult.error}`
       );
     }
 
@@ -293,7 +293,7 @@ async function processSingleItem(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`[Processor]     ❌ Error processing item ${item.product_id}:`, message);
+    console.error(`[Processor]     ❌ Error processing item ${item.product.id}:`, message);
     result.status = 'error';
     result.error = message;
   }

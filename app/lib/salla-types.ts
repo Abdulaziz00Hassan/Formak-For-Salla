@@ -10,10 +10,15 @@
 
 // ─── أنوية الـ Payload الأساسية ───────────────────────────────────────────
 
-/** عنصر واحد داخل الطلب. الحقول المعروفة فقط؛ الباقي في `extra`. */
+/** عنصر واحد داخل الطلب. الحقول المعروفة فقط؛ الباقي في `extra`.
+ *
+ * ⚠️ مصدر موثوق: docs.salla.dev (Create Order + List Order Items).
+ *    معرّف المنتج متداخل تحت `product.id` وليس حقلاً مسطّحاً.
+ *    `id` هنا هو معرّف عنصر السطر (line item) نفسه.
+ */
 export interface SallaOrderItem {
+  /** معرّف عنصر السطر (line item) — ليس معرّف المنتج. */
   id: number;
-  product_id: number;
   name: string;
   quantity: number;
   price: number;
@@ -22,6 +27,14 @@ export interface SallaOrderItem {
   note: string | null;
   /** sku أو معرّف خيار المنتج (variant id) — قد يكون مفقوداً في الطلبات العامة. */
   sku?: string;
+  /** معلومات المنتج — `product.id` هو المفتاح الذي يُربط بـ `product_designer_map.salla_product_id`. */
+  product: {
+    id: number;
+    type?: string;
+    sku?: string;
+    name?: string;
+    extra?: Record<string, unknown>;
+  };
   /** حقول إضافية غير موثّقة بعد تُرسلها سلة — نلتقطها للتشخيص دون التضحية بالأنواع. */
   extra?: Record<string, unknown>;
 }

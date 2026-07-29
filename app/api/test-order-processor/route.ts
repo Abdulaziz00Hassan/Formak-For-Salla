@@ -74,48 +74,48 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
     items: [
       {
         id: 1,
-        product_id: 111111, // ⚠️ يجب أن يكون موجوداً في product_designer_map
         name: 'كوب مطبوع عليه اسم',
         quantity: 1,
         price: 100,
         total: 100,
         note: 'بأسم: محمد العتيبي',
+        product: { id: 111111, type: 'product', name: 'كوب مطبوع عليه اسم' }, // ⚠️ يجب أن يكون موجوداً في product_designer_map
       },
       {
         id: 2,
-        product_id: 222222, // ⚠️ يجب أن يكون موجوداً في product_designer_map
         name: 'قلم محفور',
         quantity: 2,
         price: 50,
         total: 100,
         note: 'اسم العميل - فاطمة الزهراني',
+        product: { id: 222222, type: 'product', name: 'قلم محفور' }, // ⚠️ يجب أن يكون موجوداً في product_designer_map
       },
       {
         id: 3,
-        product_id: 333333,
         name: 'منتج بدون ملاحظة',
         quantity: 1,
         price: 50,
         total: 50,
         note: null,
+        product: { id: 333333, type: 'product', name: 'منتج بدون ملاحظة' },
       },
       {
         id: 4,
-        product_id: 444444,
         name: 'منتج بملاحظة عامة',
         quantity: 1,
         price: 50,
         total: 50,
         note: 'أرجو التوصيل قبل الخميس',
+        product: { id: 444444, type: 'product', name: 'منتج بملاحظة عامة' },
       },
       {
         id: 5,
-        product_id: 999999, // ⚠️ غير موجود في product_designer_map
         name: 'منتج بدون تعيين',
         quantity: 1,
         price: 50,
         total: 50,
         note: 'بأسم: سارة',
+        product: { id: 999999, type: 'product', name: 'منتج بدون تعيين' }, // ⚠️ غير موجود في product_designer_map
       },
     ],
   },
