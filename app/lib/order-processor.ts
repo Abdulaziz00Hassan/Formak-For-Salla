@@ -157,8 +157,8 @@ async function processSingleItem(
   const result: OrderItemProcessingResult = {
     productId: item.product.id,
     productName: item.name,
-    hasNote: Boolean(item.note),
-    note: item.note,
+    hasNote: Boolean(item.notes),
+    note: item.notes,
     personalizationDetected: false,
     extractedName: null,
     patternMatched: null,
@@ -174,7 +174,8 @@ async function processSingleItem(
     // تطبيع نص الملاحظة: المنتج قد يصل بدون ملاحظة (null) — يجب ألّا يُسقط
     //   بقية المسار (lookup + WhatsApp + log). الـ Regex يعيد null عند عدم المطابقة
     //   حتى مع نص فارغ → personalizationDetected تبقى false.
-    const noteText = item.note ?? '';
+    // ⚠️ الحقل في Salla API هو `notes` (جمع) — نقرأ من `item.notes` وليس `item.note`.
+    const noteText = item.notes ?? '';
     if (noteText.trim().length > 0) {
       console.log(`[Processor]     📝 Note: "${noteText}"`);
     } else {

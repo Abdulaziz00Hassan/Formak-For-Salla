@@ -78,7 +78,7 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
         quantity: 1,
         price: 100,
         total: 100,
-        note: 'بأسم: محمد العتيبي',
+        notes: 'بأسم: محمد العتيبي',
         product: { id: 111111, type: 'product', name: 'كوب مطبوع عليه اسم' }, // ⚠️ يجب أن يكون موجوداً في product_designer_map
       },
       {
@@ -87,7 +87,7 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
         quantity: 2,
         price: 50,
         total: 100,
-        note: 'اسم العميل - فاطمة الزهراني',
+        notes: 'اسم العميل - فاطمة الزهراني',
         product: { id: 222222, type: 'product', name: 'قلم محفور' }, // ⚠️ يجب أن يكون موجوداً في product_designer_map
       },
       {
@@ -96,7 +96,7 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
         quantity: 1,
         price: 50,
         total: 50,
-        note: null,
+        notes: null,
         product: { id: 333333, type: 'product', name: 'منتج بدون ملاحظة' },
       },
       {
@@ -105,7 +105,7 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
         quantity: 1,
         price: 50,
         total: 50,
-        note: 'أرجو التوصيل قبل الخميس',
+        notes: 'أرجو التوصيل قبل الخميس',
         product: { id: 444444, type: 'product', name: 'منتج بملاحظة عامة' },
       },
       {
@@ -114,7 +114,7 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
         quantity: 1,
         price: 50,
         total: 50,
-        note: 'بأسم: سارة',
+        notes: 'بأسم: سارة',
         product: { id: 999999, type: 'product', name: 'منتج بدون تعيين' }, // ⚠️ غير موجود في product_designer_map
       },
     ],

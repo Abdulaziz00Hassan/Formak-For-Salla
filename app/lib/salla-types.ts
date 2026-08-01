@@ -23,8 +23,13 @@ export interface SallaOrderItem {
   quantity: number;
   price: number;
   total: number;
-  /** حقل الملاحظة — هذا هو الحقل المستهدف لاستخراج اسم التخصيص. */
-  note: string | null;
+  /** حقل الملاحظة — هذا هو الحقل المستهدف لاستخراج اسم التخصيص.
+   *
+   * ⚠️ اسم الحقل في Salla API: `notes` (جمع)، وليس `note` (مفرد).
+   *    الكود السابق كان يقرأ `note` ويستقبل `undefined` دائماً،
+   *    فيُسجَّل `raw_note: ""` و `extracted_name: null` في order_routing_log.
+   */
+  notes: string | null;
   /** sku أو معرّف خيار المنتج (variant id) — قد يكون مفقوداً في الطلبات العامة. */
   sku?: string;
   /** معلومات المنتج — `product.id` هو المفتاح الذي يُربط بـ `product_designer_map.salla_product_id`. */

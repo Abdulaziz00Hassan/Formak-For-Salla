@@ -393,6 +393,18 @@ export async function sendWhatsAppNotification(
   try {
     httpResult = await callMetaSendMessage(config, payload);
   } catch (callErr) {
+    // 🐛 تسجيل أعمق لتشخيص فشل الاستدعاء (timeout, network, DNS, fetch refused)
+    //   قبل هذا التعديل، Vercel logs كانت تُظهر httpStatus=null لكن بدون سبب واضح.
+    //   الآن نسجّل الخطأ الكامل + الـ URL لتحديد ما إذا كان timeout من Meta أو
+    //   مشكلة في Vercel Edge runtime (fetch from Edge is limited).
+    const errObj = callErr as { name?: string; message?: string; cause?: unknown; code?: string };
+    console.error('[WhatsApp] ❌ callMetaSendMessage threw:');
+    console.error(`[WhatsApp]    name    : ${errObj.name ?? '(unknown)'}`);
+    console.error(`[WhatsApp]    message : ${errObj.message ?? '(no message)'}`);
+    console.error(`[WhatsApp]    code    : ${errObj.code ?? '(no code)'}`);
+    console.error(`[WhatsApp]    url     : ${apiUrl}`);
+    console.error(`[WhatsApp]    phone   : ${to}`);
+    console.error(`[WhatsApp]    cause   : ${JSON.stringify(errObj.cause ?? null)}`);
     return {
       status: 'failed',
       reason: classifyUnexpectedError(callErr),
@@ -405,6 +417,9 @@ export async function sendWhatsAppNotification(
 
   // 5) التمييز بين الاستجابة الناجحة والخاطئة
   if (isMetaErrorResponse(response)) {
+    // 🐛 تسجيل أعمق لرؤية رد Meta الفعلي (status, code, message)
+    console.error(`[WhatsApp] ❌ Meta returned error response (http=${httpStatus}):`);
+    console.error(`[WhatsApp]    body: ${JSON.stringify(response, null, 2)}`);
     return {
       status: 'failed',
       reason: classifyMetaError(response),
