@@ -362,6 +362,11 @@ export async function sendWhatsAppNotification(
   // 1) تطبيع رقم الجوال — fail-fast بصيغة عربية واضحة
   const normalizedTo = normalizePhoneNumber(params.to);
   if (!normalizedTo) {
+    // 🐛 logging صريح: سابقاً كان الفشل صامتاً في Vercel logs (لا أثر لـ params.to).
+    //    نطبع الطول + آخر 4 أحرف فقط لتجنب تسرّب PII كاملاً مع إعطاء دليل تشخيص كافٍ.
+    console.error(
+      `[WhatsApp] ❌ Invalid phone normalization: input length=${params.to?.length ?? 'N/A'}, last 4=...${String(params.to ?? '').slice(-4)}`
+    );
     return {
       status: 'failed',
       reason: `رقم جوال غير صالح: "${params.to}" (المتوقع صيغة سعودية 05xxxxxxxx)`,
@@ -377,6 +382,14 @@ export async function sendWhatsAppNotification(
   } catch (configErr) {
     const message =
       configErr instanceof Error ? configErr.message : 'Unknown config error';
+    // 🐛 logging صريح: سابقاً كان الفشل صامتاً (Error يُرمى ويُبتلع داخل try/catch).
+    //    المشكلة الفعلية كانت غياب WHATSAPP_DESIGNER_NOTIFICATION_TEMPLATE في Vercel
+    //    مما جعل buildWhatsAppCloudConfig() يرمي Error لم يُسجَّل في أي مكان.
+    console.error('[WhatsApp] ❌ Config build failed:', message);
+    console.error(
+      '[WhatsApp]    stack:',
+      configErr instanceof Error ? configErr.stack : '(no stack)'
+    );
     return {
       status: 'failed',
       reason: message,

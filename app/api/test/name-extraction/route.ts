@@ -1,7 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { unstable_noStore } from 'next/cache';
 import { extractNameFromNote, testNameExtraction, getAllPatternDescriptions } from '@/app/lib/name-extractor';
 
+// 🐛 fix: Next.js 16 + cacheComponents لا يقبل `export const dynamic = 'force-dynamic'`
+//    (الـAPI القديم). البديل الحديث: `unstable_noStore()` داخل الـhandler لتفادي
+//    محاولة الـprerender كـstatic.
+//    السبب الجذري: هذا route يستخدم request.nextUrl.searchParams (dynamic API)
+//    بدون opt-out من caching، يبني build ويرمي:
+//      "Route /api/test/name-extraction needs to bail out of prerendering... used nextUrl.searchParams"
+
 export async function GET(request: NextRequest) {
+  // 🐛 تفادي prerender — يجب أن يكون أول سطر داخل الـhandler.
+  unstable_noStore();
+
   try {
     const searchParams = request.nextUrl.searchParams;
     const note = searchParams.get('note');

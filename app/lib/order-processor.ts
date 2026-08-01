@@ -257,8 +257,13 @@ async function processSingleItem(
           );
         } else {
           result.whatsappStatus = 'failed';
-          console.warn(
-            `[Processor]     ⚠️ WhatsApp failed (http=${whatsappHttpStatus}): ${whatsappResult.reason}`
+          // 🐛 رفع المستوى من warn إلى error + توحيد prefix مع باقي [WhatsApp] logs
+          //    لتسهيل grep من Vercel. السبب كان يُطبع لكن كان يضيع بين warn logs الكثيرة.
+          console.error(
+            `[Processor]     ❌ WhatsApp failed (http=${whatsappHttpStatus}): ${whatsappResult.reason}`
+          );
+          console.error(
+            `[WhatsApp] reason=${whatsappResult.reason} | http=${whatsappHttpStatus} | order=${orderId} | product_id=${item.product.id}`
           );
         }
       } catch (whatsappErr) {
