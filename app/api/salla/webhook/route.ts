@@ -132,26 +132,31 @@ function verifySignature(rawBody: string, signature: string, secret: string): Si
 }
 
 /**
- * غلاف آمن لتشغيل الـ background processor مع تسجيل الأخطاء.
- * يُرجع فوراً — لا حاجة لانتظار.
+ * ينفّذ المعالجة الخلفية ويعيد ملخصها.
+ *
+ * ⚠️ لماذا awaited وليس fire-and-forget:
+ *    Vercel serverless يقتل الـ function بعد إرجاع الـ response مباشرة، مما
+ *    يعني أي `Promise` غير مُنتظر يُتلف قبل إكمال `processOrderInBackground`.
+ *    النتيجة: 200 يُرسل لسلة، ثم المعالجة تُقتل بصمت قبل أي INSERT في DB.
+ *    لجعل المعالجة موثوقة، ننتظر اكتمالها ضمن الـ request lifecycle.
+ *    المدة المتوقعة: < 5s (Supabase lookups + WhatsApp Meta API call).
  */
-function runInBackground(orderId: number, payload: SallaWebhookPayload, supabase: SupabaseClient): void {
-  // لا await — هذا هو جوهر التصميم غير الحاضن.
-  // .catch() ضروري لمنع unhandled promise rejection.
-  processOrderInBackground(payload, {
-    supabase,
-    sallaMerchantId: payload.merchant,
-    // استدعاء WhatsApp Cloud API الحقيقي من Meta.
-    // (نمرّر الدالة كمرجع — تستوفي نفس التوقيع المطلوب من order-processor)
-    sendWhatsApp: sendWhatsAppNotification,
-  })
-    .then((summary) => {
-      console.log(`[Webhook] ✅ Background processing finished for Order #${orderId}`, summary);
-    })
-    .catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      console.error(`[Webhook] ❌ Background processing failed for Order #${orderId}:`, message);
+async function processOrderAndReturn(
+  orderId: number,
+  payload: SallaWebhookPayload,
+  supabase: SupabaseClient
+): Promise<void> {
+  try {
+    const summary = await processOrderInBackground(payload, {
+      supabase,
+      sallaMerchantId: payload.merchant,
+      sendWhatsApp: sendWhatsAppNotification,
     });
+    console.log(`[Webhook] ✅ Background processing finished for Order #${orderId}`, summary);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`[Webhook] ❌ Background processing failed for Order #${orderId}:`, message);
+  }
 }
 
 /**
@@ -404,15 +409,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // 11) أطلق المعالجة في الخلفية (fire-and-forget) — لا await
-  runInBackground(orderId, orderPayload, supabase);
+  // 11) انفّذ المعالجة (awaited — Vercel يقتل الـ background promises بعد 200)
+  //     في حالة الفشل، نسجّل الخطأ لكن لا نُرجع 4xx/5xx — سلة ستُكرّر وإلّا
+  //     تُلوِّث سجلاتنا. الفشل الفعلي يُسجَّل في Vercel Logs + order_routing_log.
+  await processOrderAndReturn(orderId, orderPayload, supabase);
 
-  // 12) ⚡ أرجع 200 فوراً — قبل أي عمل ثقيل
+  // 12) ⚡ أرجع 200 بعد اكتمال المعالجة
   return NextResponse.json(
     {
       success: true,
       orderId,
-      message: 'Order received, processing in background',
+      message: 'Order processed',
     },
     { status: 200 }
   );
