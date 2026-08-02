@@ -1,0 +1,9 @@
+{
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "crons": [
+    {
+      "path": "/api/cron/refresh-salla-tokens",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}
