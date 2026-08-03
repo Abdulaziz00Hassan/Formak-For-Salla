@@ -207,6 +207,7 @@ async function processSingleItem(
     // (إما لأنه لا يوجد تعيين، أو لأن sendWhatsApp رمى استثناء قبل الـ fetch).
     let whatsappHttpStatus: number | null = null;
     let whatsappResponseJson: Record<string, unknown> | null = null;
+    let whatsappResult: WhatsAppSendResult | null = null;
 
     if (!mapping) {
       console.log(
@@ -227,7 +228,7 @@ async function processSingleItem(
       //    httpStatus/responseJson يُحفظان دائماً (حتى عند الفشل أو انفجار
       //    الاستثناء) — `null` فقط حين لم يصل طلب HTTP إلى Meta أصلاً.
       try {
-        const whatsappResult = await deps.sendWhatsApp({
+        whatsappResult = await deps.sendWhatsApp({
           to: mapping.designer_whatsapp,
           orderId,
           productName: item.name,
@@ -274,6 +275,14 @@ async function processSingleItem(
     }
 
     // 4) كتابة السجل في order_routing_log — الحالة تأتي من نتيجة الإرسال الفعلية
+    // 🆕 استخراج `whatsapp_message_id` من نتيجة الإرسال (حقل `messageId` في
+    //    `WhatsAppSendResult` عند status='sent') — يُستخدم لاحقاً للربط مع
+    //    تحديثات التسليم في `app/api/whatsapp/webhook/route.ts`.
+    const whatsappMessageId: string | null =
+      whatsappResult !== null && whatsappResult.status === 'sent'
+        ? whatsappResult.messageId
+        : null;
+
     const logResult = await logRouting(deps.supabase, merchantId, {
       salla_order_id: orderId,
       salla_product_id: item.product.id,
@@ -284,6 +293,7 @@ async function processSingleItem(
       whatsapp_status: result.whatsappStatus,
       whatsapp_http_status: whatsappHttpStatus,
       whatsapp_response_json: whatsappResponseJson,
+      whatsapp_message_id: whatsappMessageId,
     });
 
     if (!logResult.ok) {
@@ -427,6 +437,12 @@ interface LogRoutingRow {
   whatsapp_http_status: number | null;
   /** جسم الاستجابة الكامل من Meta (`null` حين لم يصل طلب HTTP). */
   whatsapp_response_json: Record<string, unknown> | null;
+  /**
+   * معرّف الرسالة من Meta (`messages[0].id`) — يُخزَّن فقط عند الإرسال الناجح.
+   * يُستخدم لاحقاً للربط مع تحديثات `whatsapp/webhook` (delivery status).
+   * `null` في كل الحالات الأخرى (failed, skipped, لم يصل طلب HTTP).
+   */
+  whatsapp_message_id: string | null;
 }
 
 /**
@@ -452,6 +468,7 @@ async function logRouting(
       whatsapp_status: row.whatsapp_status,
       whatsapp_http_status: row.whatsapp_http_status,
       whatsapp_response_json: row.whatsapp_response_json,
+      whatsapp_message_id: row.whatsapp_message_id,
     });
 
     if (error) {
