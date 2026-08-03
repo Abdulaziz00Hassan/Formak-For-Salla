@@ -51,7 +51,11 @@ const REFRESH_WINDOW_MS = REFRESH_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
 interface MerchantRow {
   id: string;
-  salla_store_id: number;
+  /**
+   * ⚠️ PostgREST يُرجع أعمدة bigint كنص JSON ("244457341") لا رقم —
+   *    احترازاً من فقدان الدقة. نتعامل معه كـ string في كل مكان.
+   */
+  salla_store_id: string;
   refresh_token: string;
   token_expires_at: string;
 }
@@ -77,7 +81,7 @@ interface RefreshAttemptResult {
 
 interface ProcessResult {
   merchantId: string;
-  sallaStoreId: number;
+  sallaStoreId: string;
   status: 'updated' | 'failed';
   reason?: string;
 }
@@ -103,8 +107,8 @@ function isMerchantRow(value: unknown): value is MerchantRow {
   return (
     typeof v['id'] === 'string' &&
     v['id'].length > 0 &&
-    typeof v['salla_store_id'] === 'number' &&
-    Number.isFinite(v['salla_store_id']) &&
+    typeof v['salla_store_id'] === 'string' &&
+    v['salla_store_id'].length > 0 &&
     typeof v['refresh_token'] === 'string' &&
     v['refresh_token'].length > 0 &&
     typeof v['token_expires_at'] === 'string' &&
