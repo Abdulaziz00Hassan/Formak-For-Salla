@@ -4,9 +4,11 @@
  * دالة مستقلة (pure) مهمتها الوحيدة: تجهيز المتغيرات الـ4 التي يحتاجها قالب
  * Meta `order_for_designer` بصيغة آمنة 100% لـ Meta Cloud API.
  *
- * نص القالب (معتمد من Meta، فئة Utility، لغة en):
- *   "Hello! Your design order #{{1}} for {{2}} has been received successfully.
- *    Notes: {{3}} Customization details: {{4}} Thank you for choosing us!"
+ * نص القالب (معتمد من Meta، فئة Marketing، لغة ar_AE):
+ *   "وصلك طلب تخصيص جديد، رقم الطلب {{1}}، للمنتج {{2}}.
+ *    ملاحظة العميل بخصوص التخصيص: {{3}}.
+ *    حالة التخصيص المطلوب: {{4}}.
+ *    يرجى مراجعة الطلب والبدء بالتنفيذ."
  *
  * ⚠️ القاعدة الصارمة: ممنوع تمرير أي قيمة فارغة أو `undefined` أو `null`
  *    كـ body parameter إلى Meta — الـ API يرفضها أو يشوّهها.
@@ -28,10 +30,10 @@
 export const FALLBACK_NO_NOTE_TEXT = 'لا توجد ملاحظات';
 
 /** نص "بلا تخصيص" حين personalizationDetected = false. */
-export const FALLBACK_NO_PERSONALIZATION_BADGE = 'None';
+export const FALLBACK_NO_PERSONALIZATION_BADGE = '—';
 
 /** نص "تخصيص مكتشف" حين personalizationDetected = true. */
-export const PERSONALIZATION_DETECTED_BADGE = '⚠️ Name customization requested';
+export const PERSONALIZATION_DETECTED_BADGE = '⚠️ يحتوي على تخصيص باسم';
 
 /** شرطة واحدة حين لا يوجد اسم منتج. */
 export const FALLBACK_NO_PRODUCT_LABEL = '—';
@@ -173,20 +175,20 @@ function truncateSafely(text: string, max: number): string {
  * buildTemplateVariables('بأسم: خالد', true, 12345, 'كوب مطبوع');
  * // → { orderIdText: '12345', productLabelText: 'كوب مطبوع',
  * //     noteText: 'بأسم: خالد',
- * //     personalizationBadge: '⚠️ Name customization requested' }
+ * //     personalizationBadge: '⚠️ يحتوي على تخصيص باسم' }
  *
  * // 2) ملاحظة عادية + لا تخصيص
  * buildTemplateVariables('التوصيل قبل ٥', false, 12346, 'كوب مطبوع');
- * // → { ..., noteText: 'التوصيل قبل ٥', personalizationBadge: 'None', ... }
+ * // → { ..., noteText: 'التوصيل قبل ٥', personalizationBadge: '—', ... }
  *
  * // 3) لا ملاحظة (null) + تخصيص (حالة حدية)
  * buildTemplateVariables(null, true, 12347, 'كوب مطبوع');
  * // → { ..., noteText: 'لا توجد ملاحظات',
- * //     personalizationBadge: '⚠️ Name customization requested', ... }
+ * //     personalizationBadge: '⚠️ يحتوي على تخصيص باسم', ... }
  *
  * // 4) لا ملاحظة (فارغة "") + لا تخصيص
  * buildTemplateVariables('', false, 12348, 'كوب مطبوع');
- * // → { ..., noteText: 'لا توجد ملاحظات', personalizationBadge: 'None', ... }
+ * // → { ..., noteText: 'لا توجد ملاحظات', personalizationBadge: '—', ... }
  *
  * // 5) ملاحظة تحوي \n صريحاً (تنظيف تلقائي)
  * buildTemplateVariables('بأسم: خالد\nملاحظة إضافية', true, 12349, 'كوب');
