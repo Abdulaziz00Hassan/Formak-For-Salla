@@ -1,0 +1,20 @@
+{
+  "event": "order.created",
+  "merchant": 244457341,
+  "created_at": "2026-08-02 00:43:00",
+  "data": {
+    "id": 900000008,
+    "reference_id": 900000008,
+    "status": { "id": 566146469, "name": "بإنتظار المراجعة", "slug": "under_review" },
+    "payment_method": "bank",
+    "currency": "SAR",
+    "customer": { "id": 1000000001, "first_name": "عميل", "last_name": "اختباري", "mobile": 500000000, "mobile_code": "+966", "email": "test@example.com" },
+    "items": [
+      { "id": 800000001, "name": "منتج اختبار", "sku": "TEST-SKU", "quantity": 1, "currency": "SAR",
+        "notes": "بأسم خالد الاختباري",
+        "product": { "id": 274747734, "type": "product", "sku": "TEST-SKU", "name": "منتج اختبار" },
+        "options": [], "images": [], "codes": [], "files": [] }
+    ],
+    "bank": null, "tags": []
+  }
+}

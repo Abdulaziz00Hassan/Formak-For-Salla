@@ -9,9 +9,30 @@ import { extractNameFromNote, testNameExtraction, getAllPatternDescriptions } fr
 //    بدون opt-out من caching، يبني build ويرمي:
 //      "Route /api/test/name-extraction needs to bail out of prerendering... used nextUrl.searchParams"
 
+// ─── حراسة بيئية ─────────────────────────────────────────────────────────
+/**
+ * ⚠️ نمنع تشغيل هذا الـ endpoint في الإنتاج لتفادي كشف نتائج regex
+ *    (وإن كانت غير حساسة بطبيعتها) عبر URL عام يمكن أن يُفهرس.
+ *    النمط نفسه المُطبَّق في app/api/test-order-processor/route.ts.
+ */
+const ENABLE_IN_PRODUCTION = false;
+
+function isProduction(): boolean {
+  return process.env.NODE_ENV === 'production' && !ENABLE_IN_PRODUCTION;
+}
+
+// ─── Handler ──────────────────────────────────────────────────────────────
+
 export async function GET(request: NextRequest) {
   // 🐛 تفادي prerender — يجب أن يكون أول سطر داخل الـhandler.
   unstable_noStore();
+
+  if (isProduction()) {
+    return NextResponse.json(
+      { error: 'Test endpoint is disabled in production' },
+      { status: 403 }
+    );
+  }
 
   try {
     const searchParams = request.nextUrl.searchParams;
