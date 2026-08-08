@@ -50,6 +50,10 @@ function isProduction(): boolean {
  *  3. منتج بملاحظة فارغة              → يجب أن يتخطاه.
  *  4. منتج بملاحظة بدون تخصيص         → يمر دون استخراج اسم.
  *  5. منتج بملاحظة لكن لا يوجد تعيين  → يُسجَّل بـ designer_whatsapp=null.
+ *  6. 🆕 منتج بتخصيص في `options[]` فقط (بدون `notes`) → يجب أن يستخرج اسماً.
+ *  7. 🆕 منتج بـ `options[]` متعددة (نص + select) → استخراج من النص فقط.
+ *  8. 🆕 منتج بـ `options[]` + `notes` معاً → استخراج من النص الموحّد.
+ *  9. 🆕 منتج بـ `options[]` من نوع `file` فقط → تخطي (لا تخصيص نصي).
  */
 const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
   event: 'order.created',
@@ -80,6 +84,7 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
         total: 100,
         notes: 'بأسم: محمد العتيبي',
         product: { id: 111111, type: 'product', name: 'كوب مطبوع عليه اسم' }, // ⚠️ يجب أن يكون موجوداً في product_designer_map
+        options: [],
       },
       {
         id: 2,
@@ -89,6 +94,7 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
         total: 100,
         notes: 'اسم العميل - فاطمة الزهراني',
         product: { id: 222222, type: 'product', name: 'قلم محفور' }, // ⚠️ يجب أن يكون موجوداً في product_designer_map
+        options: [],
       },
       {
         id: 3,
@@ -98,6 +104,7 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
         total: 50,
         notes: null,
         product: { id: 333333, type: 'product', name: 'منتج بدون ملاحظة' },
+        options: [],
       },
       {
         id: 4,
@@ -107,6 +114,7 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
         total: 50,
         notes: 'أرجو التوصيل قبل الخميس',
         product: { id: 444444, type: 'product', name: 'منتج بملاحظة عامة' },
+        options: [],
       },
       {
         id: 5,
@@ -116,6 +124,67 @@ const DEFAULT_TEST_PAYLOAD: SallaWebhookPayload = {
         total: 50,
         notes: 'بأسم: سارة',
         product: { id: 999999, type: 'product', name: 'منتج بدون تعيين' }, // ⚠️ غير موجود في product_designer_map
+        options: [],
+      },
+      // ─── 🆕 اختبارات إصلاح الخطأ #30 (تخصيص داخل `item.options[]`) ───
+      {
+        id: 6,
+        name: 'منتج بتخصيص عبر options (نص فقط)',
+        quantity: 1,
+        price: 80,
+        total: 80,
+        notes: null, // ← المشكلة: التخصيص في options وليس notes
+        product: { id: 666666, type: 'product', name: 'منتج بخيار نصي' },
+        options: [
+          {
+            id: 1,
+            name: 'بأسم',
+            type: 'text',
+            value: { name: 'عبدالله' },
+          },
+        ],
+      },
+      {
+        id: 7,
+        name: 'منتج بخيارات متعددة (نص + select)',
+        quantity: 1,
+        price: 80,
+        total: 80,
+        notes: null,
+        product: { id: 777777, type: 'product', name: 'منتج بخيارات متعددة' },
+        options: [
+          { id: 2, name: 'بأسم', type: 'text', value: { name: 'نورة' } },
+          { id: 3, name: 'اللون', type: 'select', value: { name: 'أحمر' } },
+        ],
+      },
+      {
+        id: 8,
+        name: 'منتج بـ notes + options معاً',
+        quantity: 1,
+        price: 80,
+        total: 80,
+        notes: 'بأسم: خالد', // ← تخصيص هنا أيضاً (نفس الاسم — للتأكد من الدمج)
+        product: { id: 888888, type: 'product', name: 'منتج مع ملاحظة وخيار' },
+        options: [
+          { id: 4, name: 'الاسم الإضافي', type: 'text', value: { name: 'العتيبي' } },
+        ],
+      },
+      {
+        id: 9,
+        name: 'منتج بخيار ملف فقط (لا تخصيص نصي)',
+        quantity: 1,
+        price: 80,
+        total: 80,
+        notes: null,
+        product: { id: 555000, type: 'product', name: 'منتج مع مرفق' },
+        options: [
+          {
+            id: 5,
+            name: 'صورة',
+            type: 'file',
+            value: { url: 'https://example.com/photo.jpg', name: 'photo.jpg' },
+          },
+        ],
       },
     ],
   },

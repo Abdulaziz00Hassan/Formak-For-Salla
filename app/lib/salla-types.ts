@@ -16,6 +16,61 @@
  *    معرّف المنتج متداخل تحت `product.id` وليس حقلاً مسطّحاً.
  *    `id` هنا هو معرّف عنصر السطر (line item) نفسه.
  */
+/**
+ * عنصر واحد داخل مصفوفة `item.options[]` (خيارات المنتج المخصصة في السلة).
+ *
+ * ⚠️ عندما يُعرّف التاجر "خيارات" على المنتج في سلة (مثلاً: "بأسم:" كحقل نصي
+ *    إجباري)، يدخل العميل القيمة عبر هذا الخيار — وليس في حقل `item.notes` العام.
+ *    في هذه الحالة `item.notes = null/""` ويكون التخصيص بالكامل داخل `options[]`.
+ *
+ *    البنية الفعلية من Salla webhook `order.created` تختلف بحسب نوع الخيار:
+ *
+ *  - `text` / `textarea`:
+ *      `{ id, name: "بأسم", type: "text", value: { name: "عبدالله" } }`
+ *      أو `{ id, name: "بأسم", type: "text", value: "عبدالله" }`
+ *      أو `{ id, name: "بأسم", type: "text", value: { name: "عبدالله", extra: {...} } }`
+ *
+ *  - `select` / `radio`:
+ *      `{ id, name: "اللون", type: "select", value: { name: "أحمر" } }`
+ *
+ *  - `checkbox` (متعدد) / `multiselect`:
+ *      `{ id, name: "إضافات", type: "checkbox", value: [{ name: "علبة هدايا" }, ...] }`
+ *      أو `{ value: "علبة هدية" }` (مفردة نصية)
+ *
+ *  - `file` / `image`:
+ *      `{ id, name: "صورة", type: "file", value: { url: "...", name: "..." } }`
+ *      نُسقط قيمتها من استخراج الاسم (لا تخص التخصيص النصي).
+ *
+ *  - `date` / `number`:
+ *      `{ id, name: "تاريخ", type: "date", value: "2025-08-15" }`
+ *
+ * ⚠️ المرونة في القراءة: `value` قد يكون:
+ *    - `string` (مباشر)
+ *    - `number` (نادر)
+ *    - `null` / `undefined` (الخيار فارغ — نُسقطه)
+ *    - `object` فيه `name` (الشكل الشائع)
+ *    - `array` من objects (متعدد)
+ *    - `object` بدون `name` (نادر — نُسقطه)
+ *
+ *    الكود في `extractCustomizationFromOptions` يتعامل مع كل هذه الأشكال
+ *    ويرجّع سلسلة نصية موحّدة بصيغة "الاسم: القيمة" — قابلة للتغذية مباشرة
+ *    في `extractNameFromNote` (الذي يستعمل نفس Regex على النص الموحّد).
+ *
+ * مرجع الخطأ #30 في Formak-Handoff-4.md.
+ */
+export interface SallaOrderItemOption {
+  /** معرّف الخيار داخل سلة. */
+  id?: number;
+  /** اسم/سؤال الخيار كما يراه العميل في صفحة المنتج (مثال: "بأسم", "الاسم", "اللون"). */
+  name?: string;
+  /** نوع الخيار — يحدّد كيفية قراءة `value`. */
+  type?: string;
+  /** القيمة المُدخلة من العميل — قد تكون string أو object أو array حسب النوع. */
+  value?: unknown;
+  /** حقول إضافية قد تُرسلها سلة. */
+  extra?: Record<string, unknown>;
+}
+
 export interface SallaOrderItem {
   /** معرّف عنصر السطر (line item) — ليس معرّف المنتج. */
   id: number;
@@ -23,11 +78,15 @@ export interface SallaOrderItem {
   quantity: number;
   price: number;
   total: number;
-  /** حقل الملاحظة — هذا هو الحقل المستهدف لاستخراج اسم التخصيص.
+  /** حقل الملاحظة العام — هذا أحد الحقلين المستهدفين لاستخراج اسم التخصيص.
    *
    * ⚠️ اسم الحقل في Salla API: `notes` (جمع)، وليس `note` (مفرد).
    *    الكود السابق كان يقرأ `note` ويستقبل `undefined` دائماً،
    *    فيُسجَّل `raw_note: ""` و `extracted_name: null` في order_routing_log.
+   *
+   * ⚠️ العميل الحقيقي في الإنتاج قد يدخل التخصيص هنا، أو في `options[]`
+   *    (بحسب إعداد التاجر في سلة). نقرأ المصدرين معاً — راجع
+   *    `extractCustomizationFromOptions` في order-processor.ts.
    */
   notes: string | null;
   /** sku أو معرّف خيار المنتج (variant id) — قد يكون مفقوداً في الطلبات العامة. */
@@ -40,6 +99,16 @@ export interface SallaOrderItem {
     name?: string;
     extra?: Record<string, unknown>;
   };
+  /** 🆕 قائمة خيارات المنتج المخصصة — حقل ثاني محتمل لاسم التخصيص.
+   *
+   *  الخطأ #30 (Formak-Handoff-4.md): التخصيص الذي يدخله العميل عبر "خيار
+   *  منتج" مُهيّأ في سلة يصل هنا، وليس في `notes`. الكود السابق كان يتجاهله
+   *  بالكامل فيُسجَّل `personalization_detected=false` رغم وجود تخصيص حقيقي.
+   *
+   *  الحقل اختياري في الـ schema: قَديم من Salla webhook لم يكن يحويه، أو قد
+   *  يكون فارغاً للمنتجات بدون خيارات. معالج بحارس نوع في order-processor.
+   */
+  options?: SallaOrderItemOption[];
   /** حقول إضافية غير موثّقة بعد تُرسلها سلة — نلتقطها للتشخيص دون التضحية بالأنواع. */
   extra?: Record<string, unknown>;
 }

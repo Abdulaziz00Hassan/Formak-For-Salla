@@ -21,6 +21,7 @@ import type {
   OrderItemProcessingResult,
   OrderProcessingSummary,
   SallaOrderItem,
+  SallaOrderItemOption,
   SallaWebhookPayload,
 } from '@/app/lib/salla-types';
 
@@ -157,8 +158,11 @@ async function processSingleItem(
   const result: OrderItemProcessingResult = {
     productId: item.product.id,
     productName: item.name,
-    hasNote: Boolean(item.notes),
-    note: item.notes,
+    // 🆕 بعد إصلاح الخطأ #30: hasNote/note يعكسان النص الموحّد (notes + options)
+    //    لأن هذا ما رآه منطق الاستخراج فعلاً — وليس فقط `item.notes` الأصلي.
+    //    يبقي حقل `item.notes` الأصلي مرئياً في console.log للفرز اليدوي.
+    hasNote: false, // يُحدَّد بعد بناء noteText (سطر ↓)
+    note: null, // يُحدَّد بعد بناء noteText (سطر ↓)
     personalizationDetected: false,
     extractedName: null,
     patternMatched: null,
@@ -171,18 +175,58 @@ async function processSingleItem(
   try {
     console.log(`[Processor]   📦 Item: ${item.name} (product_id=${item.product.id})`);
 
+    // 🆕 إصلاح الخطأ #30: تخصيص العميل قد يصل في حقلين منفصلين:
+    //   1) `item.notes` — ملاحظة عامة حرة (السلوك القديم).
+    //   2) `item.options[]` — خيارات المنتج المخصصة التي يهيّأها التاجر في سلة
+    //      (مثلاً "بأسم:" كحقل نصي إجباري). الكود السابق كان يتجاهل هذا الحقل
+    //      بالكامل → `personalization_detected=false` رغم وجود تخصيص حقيقي.
+    //
+    //    الحل: نُولّد نصاً موحّداً "noteText" من المصدرين معاً (notes + options)
+    //    ثم نُمرّره إلى `extractNameFromNote` كما لو كان ملاحظة واحدة. الـ Regex
+    //    الحالي لا يحتاج تعديل — هو يطابق أنماط "بأسم:" / "اسم:" / "name:" على
+    //    أي نص، بصرف النظر عن مصدره.
+    //
+    //    قرار تشخيصي: `raw_note` في order_routing_log يحوي النص الموحّد
+    //    (لأن هذا ما رآه الـ Regex فعلاً). المصدر الأصلي (notes أو options)
+    //    يُسجَّل في console فقط لتفادي توسعة schema الجدول في هذه الجولة.
+    const noteText = buildCombinedNoteText(item);
+
     // تطبيع نص الملاحظة: المنتج قد يصل بدون ملاحظة (null) — يجب ألّا يُسقط
     //   بقية المسار (lookup + WhatsApp + log). الـ Regex يعيد null عند عدم المطابقة
     //   حتى مع نص فارغ → personalizationDetected تبقى false.
     // ⚠️ الحقل في Salla API هو `notes` (جمع) — نقرأ من `item.notes` وليس `item.note`.
-    const noteText = item.notes ?? '';
-    if (noteText.trim().length > 0) {
-      console.log(`[Processor]     📝 Note: "${noteText}"`);
+    const generalNote = item.notes ?? '';
+    const hasGeneralNote = generalNote.trim().length > 0;
+    const optionsCount = Array.isArray(item.options) ? item.options.length : 0;
+    const hasOptionsText = noteText.length > generalNote.trim().length;
+
+    if (hasGeneralNote) {
+      console.log(`[Processor]     📝 Note (general): "${generalNote}"`);
     } else {
-      console.log(`[Processor]     📝 Note: (empty — سيُسجَّل بصف كامل في order_routing_log)`);
+      console.log(`[Processor]     📝 Note (general): (empty)`);
+    }
+    if (optionsCount > 0) {
+      console.log(
+        `[Processor]     🧩 Options: ${optionsCount} entr${optionsCount === 1 ? 'y' : 'ies'} (will be merged into noteText)`
+      );
+    }
+    if (noteText.trim().length > 0) {
+      console.log(`[Processor]     📄 Combined noteText (for regex): "${noteText}"`);
+    } else {
+      console.log(`[Processor]     📄 Combined noteText: (empty — سيُسجَّل بصف كامل في order_routing_log)`);
+    }
+    // ملاحظة قصيرة للـ grep — عندما يأتي التخصيص من options فقط
+    if (!hasGeneralNote && hasOptionsText) {
+      console.log(
+        `[Processor]     💡 Personalization came from options[] only (notes was empty)`
+      );
     }
 
-    // 1) استخراج الاسم من الملاحظة (Regex) — عملية CPU بحتة، لا تحتاج try/catch
+    // 🆕 تحديث result.hasNote/note بالنص الموحّد (الذي رآه منطق الاستخراج)
+    result.hasNote = noteText.trim().length > 0;
+    result.note = noteText;
+
+    // 1) استخراج الاسم من النص الموحّد (Regex) — عملية CPU بحتة، لا تحتاج try/catch
     const extraction = extractNameFromNote(noteText);
     if (extraction.extractedName) {
       result.personalizationDetected = true;
@@ -482,4 +526,125 @@ async function logRouting(
     const message = err instanceof Error ? err.message : 'Unknown error';
     return { ok: false, error: message };
   }
+}
+
+// ─── Helpers لاستخراج التخصيص من `item.options[]` (إصلاح الخطأ #30) ─────
+
+/**
+ * يقرأ قيمة خيار سلة (`option.value`) ويُرجعها كنص.
+ *
+ * يتعامل مع كل الأشكال المُلاحَظة في Salla webhook `order.created`:
+ *  - `string`        → كما هو
+ *  - `number`        → `String(n)`
+ *  - `null` / `undefined` → `""` (الخيار فارغ)
+ *  - `object` فيه `name: string` → قيمة `name` (الشكل الشائع في Salla)
+ *  - `object` بدون `name` → `""` (نادر، لا قيمة مفيدة)
+ *  - `array`         → يربط نصوص كل عنصر مفصولاً بفاصلة عربية (للـcheckbox/multiselect)
+ *
+ * المرونة هنا مقصودة: بنية Salla تختلف بين أنواع الخيارات (text/select/checkbox)
+ * والإصدارات القديمة vs الجديدة. الكود يحاول استخراج نص مفيد في كل الحالات
+ * دون رمي استثناء.
+ *
+ * @param value  حقل `value` الخام من Salla (نوعه `unknown` لأن شكله غير ثابت)
+ * @returns نص مقتطع (قد يكون فارغاً إذا لم نستطع استخراج قيمة مفيدة)
+ */
+function readOptionValueAsString(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+
+  // الشكل الأكثر شيوعاً: كائن فيه حقل `name` (وحقول أخرى مثل `id`/`extra`)
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    if (typeof obj['name'] === 'string' && obj['name'].trim().length > 0) {
+      return obj['name'];
+    }
+    return '';
+  }
+
+  // مصفوفة (checkbox متعدد / multiselect) — نربط كل العناصر بفاصلة عربية
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => readOptionValueAsString(v))
+      .filter((s) => s.trim().length > 0)
+      .join('، ');
+  }
+
+  return '';
+}
+
+/**
+ * يبني نصاً موحّداً "كأنه ملاحظة" من خيارات المنتج المخصصة في `item.options[]`.
+ *
+ * كل خيار يُحوَّل إلى سطر بصيغة `الاسم: القيمة`. الخيارات من نوع ملف/صورة
+ * تُسقَط لأن قيمتها عنوان URL وليست تخصيصاً نصياً. الخيارات الفارغة تُسقَط
+ * بهدوء (لا ضوضاء في console).
+ *
+ * 🆕 إصلاح الخطأ #30: قبل هذا التعديل، الكود كان يقرأ `item.notes` فقط.
+ *    عندما يدخل العميل التخصيص عبر "خيار منتج" في سلة، يكون `notes = null/""`
+ *    ويكون الاسم محبوساً داخل `options[]`. الآن نقرأ المصدرين معاً.
+ *
+ * مثال:
+ *  options = [
+ *    { name: "بأسم", type: "text", value: { name: "عبدالله" } },
+ *    { name: "اللون", type: "select", value: { name: "أحمر" } },
+ *  ]
+ *  → "بأسم: عبدالله\nاللون: أحمر"
+ *
+ * @param options  مصفوفة الخيارات من Salla (قد تكون `undefined`/فارغة)
+ * @returns نص موحّد يصلح للتغذية في `extractNameFromNote`
+ */
+function extractCustomizationFromOptions(
+  options: SallaOrderItemOption[] | undefined
+): string {
+  if (!Array.isArray(options) || options.length === 0) return '';
+
+  const lines: string[] = [];
+
+  for (const opt of options) {
+    if (!opt || typeof opt !== 'object') continue;
+
+    // تخطي أنواع الملفات/الصور — لا تحوي تخصيصاً نصياً
+    const type = typeof opt.type === 'string' ? opt.type.toLowerCase() : '';
+    if (type === 'file' || type === 'image' || type === 'attachment' || type === 'photo') {
+      continue;
+    }
+
+    const label = typeof opt.name === 'string' ? opt.name.trim() : '';
+    const value = readOptionValueAsString(opt.value).trim();
+
+    // خيارات بدون قيمة فعلية → نسقطها (لا تخصيص هنا)
+    if (value.length === 0) continue;
+
+    // لو الخيار ما عنده اسم (نادر)، نُمرّر القيمة كما هي — لا نُضيف `:` وهمية
+    const line = label.length > 0 ? `${label}: ${value}` : value;
+    lines.push(line);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * يبني النص الموحّد النهائي الذي يُمرَّر إلى `extractNameFromNote`.
+ *
+ * يدمج:
+ *  1) `item.notes` (الملاحظة العامة) — إن وُجدت.
+ *  2) خيارات المنتج المخصصة من `item.options[]` — بعد تحويلها إلى نص.
+ *
+ * المصدران يُفصلان بسطر جديد (`\n`) ليسهل قراءتهما في السجلات
+ * والتمييز يدوياً بين ما جاء من notes وما جاء من options.
+ *
+ * إذا كان كلاهما فارغاً، يُعاد سلسلة فارغة — والـ Regex يعيد `null` بهدوء.
+ *
+ * @param item  عنصر السلة الكامل من Salla webhook
+ * @returns نص موحّد، أو سلسلة فارغة إذا لم يكن هناك أي مصدر
+ */
+function buildCombinedNoteText(item: SallaOrderItem): string {
+  const generalNote = (item.notes ?? '').trim();
+  const optionsText = extractCustomizationFromOptions(item.options);
+
+  if (generalNote.length === 0 && optionsText.length === 0) return '';
+  if (generalNote.length === 0) return optionsText;
+  if (optionsText.length === 0) return generalNote;
+  return `${generalNote}\n${optionsText}`;
 }
